@@ -39,6 +39,8 @@ export interface ReceptionistConfig {
   appointmentSpacer?: number | null;
   /** Conditional qualification rules — IF the caller's situation matches a condition, Nova asks that block's Then-ask questions one at a time. null/absent = disabled. */
   keyQuestions?: { if: string; thenAsk: string[] }[] | null;
+  /** ISO timestamp when the workspace owner accepted the Terms of Service. null/absent = not yet accepted. */
+  termsAcceptedAt?: string | null;
 }
 
 interface ConversationState {

@@ -1448,6 +1448,7 @@ export async function handleApiRequest(
         openHours?: { start: string; end: string } | null;
         appointmentSpacer?: number | null;
         keyQuestions?: { if: string; thenAsk: string[] }[] | null;
+        termsAcceptedAt?: string | null;
         timezone?: string;
       };
 
@@ -1559,6 +1560,20 @@ export async function handleApiRequest(
         // invalid shape (string/number) → fall through to carry-over below
       } else if (Array.isArray(existing.keyQuestions)) {
         config.keyQuestions = existing.keyQuestions;
+      }
+      // Terms-of-Service acceptance timestamp — explicit valid ISO string
+      // persists (validated with Date.parse), explicit null clears, omitted
+      // OR invalid values carry the stored value over (same merge pattern as
+      // appointmentSpacer above).
+      if (body.termsAcceptedAt === null) {
+        config.termsAcceptedAt = null; // explicit clear
+      } else if (
+        typeof body.termsAcceptedAt === "string" &&
+        !isNaN(Date.parse(body.termsAcceptedAt))
+      ) {
+        config.termsAcceptedAt = body.termsAcceptedAt;
+      } else if (typeof existing.termsAcceptedAt === "string") {
+        config.termsAcceptedAt = existing.termsAcceptedAt;
       }
 
       const updateData: Record<string, unknown> = {

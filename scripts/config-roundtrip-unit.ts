@@ -421,6 +421,61 @@ async function main() {
   const h7Db = await dbConfig(WS_A);
   check("H7 after null + partial save, still cleared",
     h7Db?.keyQuestions === undefined || h7Db?.keyQuestions === null, JSON.stringify(h7Db?.keyQuestions));
+
+  // ── I. termsAcceptedAt persists + carries over + clears (task 65d78017) ──
+  console.log("\n== I. termsAcceptedAt persist / carry-over / clear ==");
+  const TS_VALID = "2026-08-14T07:00:00.000Z";
+  const i1 = await post({ workspace_id: WS_A, termsAcceptedAt: TS_VALID });
+  check("I1 POST termsAcceptedAt → 200", i1?.status === 200, `status=${i1?.status}`);
+  check("I1 POST response config.termsAcceptedAt matches", i1?.json?.config?.termsAcceptedAt === TS_VALID, JSON.stringify(i1?.json?.config));
+  const i1Db = await dbConfig(WS_A);
+  check("I1 DB termsAcceptedAt matches", i1Db?.termsAcceptedAt === TS_VALID, JSON.stringify(i1Db?.termsAcceptedAt));
+  const i1Get = await get(WS_A);
+  check("I1 GET returns termsAcceptedAt", i1Get?.config?.termsAcceptedAt === TS_VALID, JSON.stringify(i1Get?.config));
+  // Old-client partial save omitting the field must preserve it.
+  const i2 = await post({ workspace_id: WS_A, businessName: "Partial Plumbing" });
+  const i2Db = await dbConfig(WS_A);
+  check("I2 omitted termsAcceptedAt carried over",
+    i2?.status === 200 && i2Db?.termsAcceptedAt === TS_VALID, JSON.stringify(i2Db?.termsAcceptedAt));
+  // Invalid values (non-date string, non-string shape) ignored → carried over.
+  const i2b = await post({ workspace_id: WS_A, termsAcceptedAt: "not-a-date" });
+  const i2bDb = await dbConfig(WS_A);
+  check("I2b invalid string ignored, previous value carried", i2bDb?.termsAcceptedAt === TS_VALID, JSON.stringify(i2bDb?.termsAcceptedAt));
+  const i2c = await post({ workspace_id: WS_A, termsAcceptedAt: 12345 } as any);
+  const i2cDb = await dbConfig(WS_A);
+  check("I2c invalid shape ignored, previous value carried", i2cDb?.termsAcceptedAt === TS_VALID, JSON.stringify(i2cDb?.termsAcceptedAt));
+  // Explicit null clears (legal evidence removed).
+  await post({ workspace_id: WS_A, termsAcceptedAt: null });
+  const i3Db = await dbConfig(WS_A);
+  const i3Get = await get(WS_A);
+  check("I3 explicit null clears termsAcceptedAt",
+    i3Db?.termsAcceptedAt === undefined || i3Db?.termsAcceptedAt === null, JSON.stringify(i3Db?.termsAcceptedAt));
+  check("I3 GET no longer returns it",
+    i3Get?.config?.termsAcceptedAt === undefined || i3Get?.config?.termsAcceptedAt === null,
+    JSON.stringify(i3Get?.config));
+  // Explicit null then a partial save → still cleared (carry-over of null).
+  await post({ workspace_id: WS_A, businessName: "Partial Plumbing" });
+  const i3bDb = await dbConfig(WS_A);
+  check("I3b after null + partial save, still cleared",
+    i3bDb?.termsAcceptedAt === undefined || i3bDb?.termsAcceptedAt === null, JSON.stringify(i3bDb?.termsAcceptedAt));
+  // Combined save with keyQuestions + appointmentSpacer + requireAddress.
+  await post({
+    workspace_id: WS_A,
+    termsAcceptedAt: TS_VALID,
+    requireAddress: true,
+    appointmentSpacer: 30,
+    keyQuestions: [{ if: "terms cond", thenAsk: ["terms q"] }],
+  });
+  const i4Db = await dbConfig(WS_A);
+  check("I4 combined save: termsAcceptedAt + keyQuestions + spacer + requireAddress all persist",
+    i4Db?.termsAcceptedAt === TS_VALID && i4Db?.requireAddress === true &&
+    i4Db?.appointmentSpacer === 30 &&
+    Array.isArray(i4Db?.keyQuestions) && i4Db?.keyQuestions[0]?.if === "terms cond",
+    JSON.stringify(i4Db));
+  // Fresh workspace B never told about the field → stays unset.
+  const i5Db = await dbConfig(WS_B);
+  check("I5 fresh workspace stays unset", !("termsAcceptedAt" in (i5Db ?? {})), JSON.stringify(i5Db));
+
   console.log("\n== CLEANUP ==");
   await db.delete(workspaces).where(eq(workspaces.id, WS_A));
   await db.delete(workspaces).where(eq(workspaces.id, WS_B));
