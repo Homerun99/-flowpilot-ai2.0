@@ -802,6 +802,143 @@ function SlideTrainAI(_props: SlideContentProps) {
   );
 }
 
+// ─── Slide 7: Terms of Service ───────────────────────────────────────────
+// Generated verbatim from /home/team/shared/TERMS_OF_SERVICE.md (18 sections).
+const TERMS_SECTIONS: { heading: string; body: string[] }[] = [
+  { heading: "1. Acceptance of Terms", body: [
+    "By creating an account, accessing the FlowPilot AI platform (the \"Service\"), or checking \"I accept\" during onboarding, you agree to be bound by these Terms of Service (the \"Terms\") and our Privacy Policy. If you are accepting on behalf of a business, you represent that you have authority to bind that business. If you do not agree, do not use the Service.",
+  ] },
+  { heading: "2. The Service", body: [
+    "FlowPilot AI provides AI-powered automation tools including an AI phone receptionist, email handling, appointment scheduling, invoicing, proposal generation, and related features (the \"Service\"). The Service uses artificial intelligence, machine learning models, speech recognition, and text-to-speech technologies, which are probabilistic by nature.",
+  ] },
+  { heading: "3. AI Output Is Not Guaranteed — No Professional Advice", body: [
+    "The Service is a tool, not a professional. AI-generated content, responses, summaries, appointments, scores, and other output (\"AI Output\") may be inaccurate, incomplete, outdated, or inappropriate. The Service does not provide legal, medical, financial, engineering, safety, or other professional advice or services. You are solely responsible for reviewing, verifying, and using AI Output, including any messages sent to your customers, appointments booked, or invoices issued. The Service is not a substitute for licensed professionals.",
+  ] },
+  { heading: "4. No Warranty; \"As Is\" and \"As Available.\"", body: [
+    "THE SERVICE IS PROVIDED \"AS IS\" AND \"AS AVAILABLE,\" WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, ACCURACY, COMPLETENESS, UNINTERRUPTED AVAILABILITY, OR THAT AI OUTPUT WILL BE ERROR-FREE OR SECURE. WE DO NOT WARRANT THAT THE SERVICE WILL MEET YOUR REQUIREMENTS, THAT CALLS WILL BE ANSWERED OR RECORDED WITHOUT FAILURE, OR THAT APPOINTMENTS, EMAILS, OR INVOICES WILL BE DELIVERED, BOOKED, OR PAID. YOU USE THE SERVICE AT YOUR OWN RISK.",
+  ] },
+  { heading: "5. Limitation of Liability", body: [
+    "TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL FLOWPILOT AI, ITS AFFILIATES, OFFICERS, DIRECTORS, EMPLOYEES, OR AGENTS BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR ANY LOST PROFITS, LOST REVENUE, LOST DATA, LOST OPPORTUNITIES, LOST CUSTOMERS, OR COST OF SUBSTITUTE SERVICES, ARISING OUT OF OR RELATED TO THE SERVICE OR THESE TERMS, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. OUR TOTAL AGGREGATE LIABILITY FOR ALL CLAIMS ARISING OUT OF OR RELATING TO THE SERVICE OR THESE TERMS SHALL NOT EXCEED THE AMOUNTS YOU ACTUALLY PAID US IN THE TWELVE (12) MONTHS PRECEDING THE CLAIM. THIS CAP APPLIES REGARDLESS OF THE FORM OF ACTION, WHETHER IN CONTRACT, TORT (INCLUDING NEGLIGENCE), OR OTHERWISE.",
+  ] },
+  { heading: "6. Specifically Excluded Liabilities", body: [
+    "Without limiting Section 5, we are not liable for: (a) any missed, dropped, unanswered, or failed phone calls, or calls that a caller abandons; (b) any error, mishearing, hallucination, or other inaccuracy in AI Output, including incorrect appointment times, addresses, names, or service details; (c) appointments that are double-booked, not booked, or booked at the wrong time; (d) emails that are not delivered, are delayed, or are marked as spam; (e) invoices that are unpaid, incorrect, or undelivered; (f) loss of revenue, customers, or opportunities resulting from any of the above; (g) actions you take or fail to take based on AI Output; (h) failures or outages of third-party providers on which the Service depends (see Section 7); (i) your failure to review dashboards, call logs, or notifications; or (j) any unauthorized access to your account resulting from your failure to protect your credentials or from your use of the \"remember me\" or auto-fill features on shared or unsecured devices.",
+  ] },
+  { heading: "7. Third-Party Services", body: [
+    "The Service integrates with and depends on third-party providers including telecommunications carriers (e.g., Twilio), AI model providers, email delivery providers, payment processors, and hosting providers. We do not control and are not responsible for their availability, performance, pricing, terms, or failures. Payment links and payment processing are provided by third parties (e.g., Stripe, PayPal, Venmo) and are governed by their own terms; we never touch or process your customers' payments. Your use of third-party services is subject to their terms and privacy policies.",
+  ] },
+  { heading: "8. Your Responsibilities", body: [
+    "You agree to: (a) provide accurate business information and keep it current; (b) review AI Output, call logs, appointments, emails, and invoices for accuracy; (c) verify that your business hours, address, services, and availability are correct in the Service; (d) ensure you have all necessary rights and consents to use customer data and to have AI employees communicate with your customers; (e) comply with all applicable laws, including marketing, telemarketing, privacy, and data protection laws; (f) not use the Service in violation of our Acceptable Use rules (no spam, deception, fraud, harassment, illegal activity); (g) maintain the security of your account credentials; and (h) not attempt to reverse engineer, resell, or sublicense the Service, or use it to build a competing product.",
+  ] },
+  { heading: "9. Emergency and Sensitive Contexts", body: [
+    "The Service is not designed for, and must not be used in, emergency response, healthcare treatment, crisis hotline, or other life-safety contexts. You must not route emergency calls to the Service. The Service is not HIPAA-compliant unless we agree otherwise in writing. You are responsible for complying with any industry-specific regulations applicable to your business (e.g., medical, legal, financial).",
+  ] },
+  { heading: "10. Your Data and Content", body: [
+    "You retain all rights to the business information, documents, and customer data you provide (\"Your Data\"). You grant us a non-exclusive, worldwide, royalty-free license to host, process, store, and use Your Data solely to provide and improve the Service. We will not sell Your Data. We may use aggregated, de-identified data to operate and improve the Service.",
+  ] },
+  { heading: "11. Fees, Billing, and Trial", body: [
+    "The Service is offered on a subscription basis with fees set out on our pricing page or your plan agreement. Fees are billed in advance and are non-refundable except as required by law. Trials convert to paid plans at the end of the trial unless cancelled. You authorize us (or our payment processor) to charge the payment method on file. Late or failed payments may result in suspension of the Service. We may change fees with reasonable notice.",
+  ] },
+  { heading: "12. Termination", body: [
+    "You may cancel your subscription at any time from your dashboard; cancellation is effective at the end of the current billing period. We may suspend or terminate your access for breach of these Terms, for conduct that harms the Service or other users, or if required by law. Upon termination, your right to use the Service ends; we may delete Your Data after a reasonable period unless retention is required by law.",
+  ] },
+  { heading: "13. Intellectual Property", body: [
+    "The Service, including its software, design, trademarks, and documentation, is owned by FlowPilot AI or its licensors and is protected by intellectual property laws. Except for the rights expressly granted herein, no rights are granted to you.",
+  ] },
+  { heading: "14. Confidentiality", body: [
+    "Each party will keep confidential any non-public information disclosed by the other that is marked confidential or reasonably should be understood to be confidential, and will use it only to perform or receive the Service.",
+  ] },
+  { heading: "15. Changes to Terms", body: [
+    "We may update these Terms from time to time. We will notify you of material changes by email or in-app notice. Continued use of the Service after changes take effect constitutes acceptance.",
+  ] },
+  { heading: "16. Dispute Resolution; Arbitration; Class-Action Waiver", body: [
+    "These Terms are governed by the laws of the State of Arizona (excluding conflict-of-law rules) and applicable federal law. Any dispute arising out of or relating to these Terms or the Service shall be resolved by binding individual arbitration administered in Maricopa County, Arizona, under the rules of the American Arbitration Association, and not in court, except that either party may seek injunctive or other equitable relief in a court of competent jurisdiction. YOU AND FLOWPILOT AI AGREE THAT EACH MAY BRING CLAIMS ONLY IN ITS OWN INDIVIDUAL CAPACITY AND NOT AS A PLAINTIFF OR CLASS MEMBER IN ANY CLASS, COLLECTIVE, OR REPRESENTATIVE ACTION. If arbitration is prohibited by law, the dispute shall be resolved exclusively in the state or federal courts located in Maricopa County, Arizona, and you consent to the personal jurisdiction of those courts.",
+  ] },
+  { heading: "17. Miscellaneous", body: [
+    "These Terms are the entire agreement between you and us regarding the Service. If any provision is found unenforceable, the remaining provisions remain in effect. Our failure to enforce a provision is not a waiver. You may not assign these Terms without our written consent; we may assign them in connection with a merger, acquisition, or sale of assets. No agency, partnership, or joint venture is created by these Terms.",
+  ] },
+  { heading: "18. Contact", body: [
+    "Questions about these Terms: support@klerkitai.com.",
+  ] },
+];
+function SlideTerms({ workspaceId, onAdvance }: SlideContentProps) {
+  const [accepted, setAccepted] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const handleAccept = async () => {
+    if (!accepted || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const resp = await fetch("/api/workspace/receptionist-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          termsAcceptedAt: new Date().toISOString(),
+        }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `Server error: ${resp.status}`);
+      }
+      onAdvance();
+    } catch (err) {
+      setSaveError(
+        `We couldn't save your acceptance right now: ${err instanceof Error ? err.message : "network error"}. Please try again.`
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-5 text-left">
+      <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
+        {TERMS_SECTIONS.map((section) => (
+          <div key={section.heading} className="px-4 py-3">
+            <h3 className="text-xs font-bold text-gray-900 dark:text-gray-100 mb-1">
+              {section.heading}
+            </h3>
+            {section.body.map((paragraph, i) => (
+              <p
+                key={i}
+                className="text-xs leading-relaxed text-gray-600 dark:text-gray-300 mb-1.5 last:mb-0"
+              >
+                {paragraph}
+              </p>
+            ))}
+          </div>
+        ))}
+      </div>
+      <label className="flex items-center justify-center gap-2 text-sm text-gray-600 dark:text-gray-400 select-none cursor-pointer">
+        <input
+          type="checkbox"
+          checked={accepted}
+          onChange={(e) => {
+            setAccepted(e.target.checked);
+            if (saveError) setSaveError(null);
+          }}
+          className="w-4 h-4 rounded accent-indigo-600"
+        />
+        I have read and accept the Terms of Service
+      </label>
+      {saveError && (
+        <p className="text-sm text-red-600 dark:text-red-400 text-center">
+          {saveError}
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={handleAccept}
+        disabled={!accepted || saving}
+        className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm shadow-indigo-500/25"
+      >
+        {saving ? "Saving…" : "Accept & Continue"}
+      </button>
+    </div>
+  );
+}
 // ─── Slide 6: All Set ────────────────────────────────────────────────
 
 function SlideAllSet(_props: SlideContentProps) {
@@ -886,6 +1023,14 @@ const SLIDES: SlideDef[] = [
     Content: SlideTrainAI,
     linkTo: "/client/upload",
     linkLabel: "Go to document upload",
+  },
+  {
+    icon: "📜",
+    title: "Terms of Service",
+    subtitle:
+      "Please review the terms governing your use of FlowPilot AI. Your acceptance is required to continue.",
+    Content: SlideTerms,
+    hideContinue: true,
   },
   {
     icon: "🎉",
