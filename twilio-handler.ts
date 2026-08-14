@@ -270,11 +270,15 @@ async function generateTTS(text: string, key: string): Promise<Buffer | null> {
       }),
     });
 
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      console.warn(`[twilio-handler] generateTTS failed (non-fatal): status=${resp.status} for key=${key}`);
+      return null;
+    }
     const buffer = Buffer.from(await resp.arrayBuffer());
     ttsCache.set(key, { buffer, expires: Date.now() + 10 * 60 * 1000 });
     return buffer;
-  } catch {
+  } catch (err) {
+    console.warn(`[twilio-handler] generateTTS error (non-fatal):`, err);
     return null;
   }
 }
@@ -339,6 +343,7 @@ async function generateAIResponse(
   bookingContext?: string,
 ): Promise<string> {
   if (!OPENAI_KEY) {
+    console.warn("[twilio-handler] generateAIResponse: no OPENAI_KEY — returning generic fallback");
     return "I'm here to help! What can I assist you with today?";
   }
 
@@ -374,8 +379,14 @@ async function generateAIResponse(
     const data = (await resp.json()) as {
       choices?: { message?: { content?: string } }[];
     };
-    return data.choices?.[0]?.message?.content?.trim() || "I'm sorry, could you repeat that?";
-  } catch {
+    const content = data.choices?.[0]?.message?.content?.trim();
+    if (!content) {
+      console.warn("[twilio-handler] generateAIResponse: empty LLM content — returning repeat fallback");
+      return "I'm sorry, could you repeat that?";
+    }
+    return content;
+  } catch (err) {
+    console.warn("[twilio-handler] generateAIResponse failed (non-fatal):", err);
     return "I'm here to help! Could you tell me more about what you need?";
   }
 }
@@ -389,6 +400,7 @@ async function detectBookingIntent(
   config?: ReceptionistConfig,
 ): Promise<BookingIntent> {
   if (!OPENAI_KEY) {
+    console.warn("[twilio-handler] detectBookingIntent: no OPENAI_KEY — skipping intent detection");
     return { wantsBooking: false, callerName: null, serviceNeed: null, timeHint: null, hasTime: false };
   }
 
@@ -440,7 +452,10 @@ Be conservative: never invent a name or a time the caller didn't say.`,
       choices?: { message?: { content?: string } }[];
     };
     const text = data.choices?.[0]?.message?.content;
-    if (!text) return { wantsBooking: false, callerName: null, serviceNeed: null, timeHint: null, hasTime: false };
+    if (!text) {
+      console.warn("[twilio-handler] detectBookingIntent: empty LLM content — treating as no intent");
+      return { wantsBooking: false, callerName: null, serviceNeed: null, timeHint: null, hasTime: false };
+    }
 
     const parsed = JSON.parse(text) as BookingIntent;
     return {
@@ -640,6 +655,9 @@ async function backfillLeadAbout(
     });
     if (about.summary || (about.qa && about.qa.length > 0)) {
       await db.update(leads).set({ summary: about.summary, qa: about.qa }).where(eq(leads.id, leadId));
+      console.log(`[twilio-handler] about-lead backfill written for lead ${leadId} (summary=${about.summary ? "yes" : "no"} qa=${about.qa?.length ?? 0})`);
+    } else {
+      console.log(`[twilio-handler] about-lead backfill: empty extraction for lead ${leadId} (summary/qa null)`);
     }
   } catch (err) {
     console.warn("[twilio-handler] About-lead backfill failed (non-fatal):", err);
@@ -657,7 +675,10 @@ function logCallOutcome(
     appointmentId?: string | null;
   },
 ): void {
-  if (!workspaceId || !callSid) return;
+  if (!workspaceId || !callSid) {
+    console.warn(`[twilio-handler] logCallOutcome skipped (missing workspaceId=${!!workspaceId} callSid=${!!callSid})`);
+    return;
+  }
   import("./src/lib/call-log")
     .then(({ updateCallOutcome }) =>
       updateCallOutcome({ workspaceId, callSid, ...patch }),
@@ -683,6 +704,7 @@ export async function handleTwilioVoice(
 
   // Call completed
   if (callStatus === "completed") {
+    console.log(`[twilio-handler] ${callSid} branch=call-completed (hangup, convo cleared)`);
     conversations.delete(callSid);
     return xmlResponse(`<Response><Hangup/></Response>`);
   }
@@ -742,6 +764,9 @@ export async function handleTwilioVoice(
   // Process speech — load or create conversation state
   let convo = conversations.get(callSid);
   if (!convo) {
+    // First webhook for this call carried speech (no greeting webhook seen) —
+    // unusual but legal; the greeting branch is what normally creates the convo.
+    console.log(`[twilio-handler] ${callSid} branch=speech-first-webhook (convo created fresh)`);
     convo = { history: [], leadCreated: false, bookingDone: false };
     if (callerPhone) convo.callerPhone = callerPhone;
     conversations.set(callSid, convo);
@@ -778,6 +803,11 @@ export async function handleTwilioVoice(
         : Promise.resolve(null),
     ]);
     if (kbContext && kbContext.length > 1200) kbContext = kbContext.slice(0, 1200) + "\n…";
+    console.log(
+      `[twilio-handler] ${callSid} branch=booking-gate ${gatePasses ? "passed (intent LLM invoked)" : "skipped (no booking language)"} | kb=${kbContext ? "hit" : "miss"}`,
+    );
+  } else {
+    console.warn(`[twilio-handler] ${callSid} branch=no-workspace-id (KB + booking disabled for this call)`);
   }
 
   // ── Booking flow (from intent, if the gate passed) ─────────────────────
@@ -789,6 +819,11 @@ export async function handleTwilioVoice(
   if (workspaceId && !convo.bookingDone && intent) {
     if (intent.callerName) convo.callerName = intent.callerName;
     if (intent.serviceNeed) convo.serviceNeed = intent.serviceNeed;
+    if (intent.callerName || intent.serviceNeed || intent.hasTime) {
+      console.log(
+        `[twilio-handler] ${callSid} branch=intent-extracted name=${intent.callerName ?? "-"} need=${intent.serviceNeed ?? "-"} time=${intent.timeHint ?? "-"} wantsBooking=${intent.wantsBooking}`,
+      );
+    }
     // Only trust a detected time hint when the caller's literal message
     // actually contains time language — prevents the model from
     // hallucinating a time on name-only turns (e.g. "my name is Jane").
@@ -803,6 +838,11 @@ export async function handleTwilioVoice(
         literalDay === null || new RegExp(`\\b${literalDay}\\b`, "i").test(intent.timeHint);
       if (!(newVague && oldSpecific) && hintMatchesLiteral) {
         convo.pendingTimeHint = intent.timeHint;
+        console.log(`[twilio-handler] ${callSid} branch=time-hint-accepted hint="${intent.timeHint}"`);
+      } else {
+        console.log(
+          `[twilio-handler] ${callSid} branch=time-hint-rejected hint="${intent.timeHint}" reason=${newVague && oldSpecific ? "vague-new-over-specific-old" : "literal-day-mismatch"}`,
+        );
       }
     }
     // Fallback: the caller's literal speech contains day/time language but the
@@ -821,6 +861,8 @@ export async function handleTwilioVoice(
       if (fb) {
         convo.pendingTimeHint = speechResult.trim();
         console.log(`[twilio-handler] ${callSid} intent LLM missed time; literal fallback used: "${convo.pendingTimeHint}"`);
+      } else {
+        console.log(`[twilio-handler] ${callSid} branch=literal-time-fallback-no-parse (time language but no parseable hint)`);
       }
     }
 
@@ -835,6 +877,8 @@ export async function handleTwilioVoice(
       if (name) {
         convo.callerName = name;
         console.log(`[twilio-handler] ${callSid} name captured deterministically: "${name}"`);
+      } else {
+        console.log(`[twilio-handler] ${callSid} branch=name-capture-failed (awaitingName but reply isn't a name)`);
       }
     }
 
@@ -849,6 +893,8 @@ export async function handleTwilioVoice(
       if (trimmed && !isTimeOnlyReply(trimmed)) {
         convo.address = trimmed;
         console.log(`[twilio-handler] ${callSid} address captured deterministically: "${trimmed}"`);
+      } else if (trimmed) {
+        console.log(`[twilio-handler] ${callSid} branch=address-capture-deferred (time-only reply — re-ask address)`);
       }
     }
 
@@ -884,16 +930,22 @@ export async function handleTwilioVoice(
       !!convo.offeredSlot ||
       asapTrigger;
 
+    if (workspaceId && !convo.bookingDone && intent) {
+      console.log(`[twilio-handler] ${callSid} branch=wantsBook=${wantsBook}`);
+    }
+
     if (wantsBook) {
       const hasTime = !!convo.pendingTimeHint;
       if (!hasTime) {
         convo.awaitingName = false;
         // Caller wants to be seen but hasn't said when — ask.
+        console.log(`[twilio-handler] ${callSid} branch=booking-ask-when (no time preference yet)`);
         bookingContext =
           "ASK_WHEN: The caller wants to book an appointment but hasn't given a day or time. Ask them when they'd like to be seen (e.g. \"When would you like to come in?\" or \"Do you have a day or time in mind?\").";
       } else if (!convo.callerName) {
         // Has a time but no name yet — ask for the name, book next turn.
         convo.awaitingName = true;
+        console.log(`[twilio-handler] ${callSid} branch=booking-ask-name (time="${convo.pendingTimeHint}", no name yet)`);
         bookingContext =
           `ASK_NAME: The caller wants to book (they mentioned ${convo.pendingTimeHint}) but hasn't given their name. Ask for their name first (and a good phone number if not already known).`;
       } else if (config?.requireAddress && !convo.address) {
@@ -901,6 +953,7 @@ export async function handleTwilioVoice(
         // before an appointment can be booked — ask for it, do NOT book yet.
         convo.awaitingName = false;
         convo.awaitingAddress = true;
+        console.log(`[twilio-handler] ${callSid} branch=booking-ask-address (requireAddress, no address yet)`);
         bookingContext =
           "ASK_ADDRESS: The caller wants to book but hasn't given the service address. Ask for the address where the work will be done (e.g. \"And what's the address for the service?\"). Do NOT book or confirm anything yet — the appointment must not be scheduled without the address.";
       } else {
@@ -948,12 +1001,14 @@ export async function handleTwilioVoice(
             if (slot) {
               bookingSlot = slot;
               bookingFormatted = booking.formatSlot(slot, now, timezone);
+              console.log(`[twilio-handler] ${callSid} branch=booked offered-day slot=${bookingFormatted}`);
               bookingContext =
                 `BOOKED: The appointment has just been scheduled for ${bookingFormatted} (the next open day after the caller's closed request). ` +
                 `You MUST confirm this to the caller now, mentioning the EXACT day and time (e.g. "You're all set for ${bookingFormatted}"). ` +
                 (convo.callerName ? `Use their name (${convo.callerName}) if natural.` : "") +
                 ` Then ask if there's anything else. Do not say someone will call back to confirm — it's booked.`;
             } else {
+              console.log(`[twilio-handler] ${callSid} branch=no-slot (offered-day had no free slot in 14 days)`);
               bookingContext =
                 "NO_SLOT: No appointment slot could be found in the next two weeks. Apologize and offer to have someone call the caller back to arrange a time.";
             }
@@ -965,6 +1020,7 @@ export async function handleTwilioVoice(
             lastTimeHint = `offered slot (${booking.formatSlot(offered, now, timezone)})`;
             bookingSlot = offered;
             bookingFormatted = booking.formatSlot(offered, now, timezone);
+            console.log(`[twilio-handler] ${callSid} branch=booked offered-slot=${bookingFormatted}`);
             bookingContext =
               `BOOKED: The appointment has just been scheduled for ${bookingFormatted}. ` +
               `You MUST confirm this to the caller now, mentioning the EXACT day and time (e.g. "You're all set for ${bookingFormatted}"). ` +
@@ -985,6 +1041,7 @@ export async function handleTwilioVoice(
                 const nextOpen = booking.findNextOpenDay(hint.day, hours, timezone);
                 if (nextOpen) {
                   convo.offeredDay = nextOpen;
+                  console.log(`[twilio-handler] ${callSid} branch=day-closed offer-next-open=${booking.formatDay(nextOpen, timezone)}`);
                   bookingContext =
                     `DAY_CLOSED: The caller asked for an appointment on ${booking.formatDay(hint.day, timezone)} ` +
                     `but the business is CLOSED that day. Tell them you're sorry, you're closed on ` +
@@ -992,6 +1049,7 @@ export async function handleTwilioVoice(
                     `${booking.formatDay(nextOpen, timezone)}. Ask if that works for them — do NOT book yet; ` +
                     `wait for their confirmation.`;
                 } else {
+                  console.log(`[twilio-handler] ${callSid} branch=no-slot (requested day closed, no open day in 14 days)`);
                   bookingContext =
                     "NO_SLOT: The caller's requested day is closed and no open day is available in the next two weeks. Apologize and offer to have someone call them back to arrange a time.";
                 }
@@ -1002,11 +1060,13 @@ export async function handleTwilioVoice(
                 // confirmation (mirrors the closed-DAY flow).
                 const pick = booking.pickBestSlotChecked(hint, hours, busy, now, timezone);
                 if (!pick) {
+                  console.log(`[twilio-handler] ${callSid} branch=no-slot (no slot found in 14 days)`);
                   bookingContext =
                     "NO_SLOT: No appointment slot could be found in the next two weeks. Apologize and offer to have someone call the caller back to arrange a time.";
                 } else if (pick.matched) {
                   bookingSlot = pick.slot;
                   bookingFormatted = booking.formatSlot(pick.slot, now, timezone);
+                  console.log(`[twilio-handler] ${callSid} branch=booked matched slot=${bookingFormatted}`);
                   bookingContext =
                     `BOOKED: The appointment has just been scheduled for ${bookingFormatted}. ` +
                     `You MUST confirm this to the caller now, mentioning the EXACT day and time (e.g. "You're all set for ${bookingFormatted}"). ` +
@@ -1014,18 +1074,23 @@ export async function handleTwilioVoice(
                     ` Then ask if there's anything else. Do not say someone will call back to confirm — it's booked.`;
                 } else {
                   convo.offeredSlot = pick.slot;
+                  console.log(`[twilio-handler] ${callSid} branch=time-unavailable offer=${booking.formatSlot(pick.slot, now, timezone)}`);
                   bookingContext =
                     `TIME_UNAVAILABLE: ${booking.timeUnavailableMessage(hint, pick.slot, hours, now, timezone)}`;
                 }
               }
             } else {
+              console.log(`[twilio-handler] ${callSid} branch=ask-when-repeat (pendingTimeHint "${convo.pendingTimeHint}" unparseable)`);
               bookingContext =
                 "ASK_WHEN: Could not understand the caller's time preference. Ask them to repeat when they'd like to be seen.";
             }
           }
         } catch (err) {
+          console.warn(`[twilio-handler] ${callSid} branch=booking-engine-error (non-fatal, continues as freeflow):`, err);
         }
       }
+    } else if (workspaceId && convo.bookingDone) {
+      console.log(`[twilio-handler] ${callSid} branch=booking-flow-skip (already booked)`);
     }
   }
 
@@ -1147,6 +1212,7 @@ export async function handleTwilioVoice(
   // persisted (bookingDone=true) or never existed.
 
   if (wantTransfer) {
+    console.log(`[twilio-handler] ${callSid} branch=transfer (hasTransferNumber=${hasTransferNumber})`);
     conversations.delete(callSid);
     if (hasTransferNumber) {
       logCallOutcome(workspaceId, callSid, { outcome: "transferred" });
@@ -1155,6 +1221,7 @@ export async function handleTwilioVoice(
       );
     }
     // No transfer number — take a message
+    console.log(`[twilio-handler] ${callSid} branch=transfer-no-number take-message`);
     logCallOutcome(workspaceId, callSid, { outcome: "message_taken" });
     return xmlResponse(
       `<Response statusCallback="${baseUrl}/api/twilio/webhooks/status" statusCallbackMethod="POST"><Say>I can't transfer calls right now, but I'll take a message and have someone call you back. Please leave your message after the tone.</Say><Gather input="speech" speechTimeout="auto" action="${baseUrl}/api/twilio/webhooks/voice" method="POST"/></Response>`
@@ -1166,8 +1233,10 @@ export async function handleTwilioVoice(
   // this webhook well under Twilio's timeout.
   const ttsRace = await raceTts(generateTTS(aiResponse, ttsKey), 3500);
   const audio = ttsRace.kind === "audio" ? ttsRace.buffer : null;
+  console.log(`[twilio-handler] ${callSid} branch=tts-${audio ? "audio-play" : "fallback-say"}`);
 
   if (isGoodbye) {
+    console.log(`[twilio-handler] ${callSid} branch=goodbye (convo cleared)`);
     conversations.delete(callSid);
   }
 
@@ -1184,12 +1253,14 @@ export async function handleTwilioVoice(
     })(),
     new Promise<Response>((resolve) =>
       setTimeout(
-        () =>
+        () => {
+          console.warn(`[twilio-handler] ${callSid} branch=deadline-8s (webhook exceeded 8s — returning safe TwiML)`);
           resolve(
             xmlResponse(
               `<Response statusCallback="${baseUrl}/api/twilio/webhooks/status" statusCallbackMethod="POST"><Say>Sorry, we're experiencing a brief delay. Please call back in a moment.</Say><Hangup/></Response>`,
             ),
-          ),
+          );
+        },
         8000,
       ),
     ),
@@ -1197,8 +1268,10 @@ export async function handleTwilioVoice(
 }
 
 export function handleTwilioAudio(key: string): Response {
-  const cached = ttsCache.get(decodeURIComponent(key));
+  const decoded = decodeURIComponent(key);
+  const cached = ttsCache.get(decoded);
   if (!cached || cached.expires <= Date.now()) {
+    console.warn(`[twilio-handler] audio 404: cache miss/expired for key=${decoded}`);
     return new Response("Audio not found", { status: 404 });
   }
   return new Response(cached.buffer, {
@@ -1323,6 +1396,9 @@ async function playAndGatherXml(
 ): Promise<string> {
   const ttsRace = await raceTts(generateTTS(text, ttsKey), 3000);
   const audio = ttsRace.kind === "audio" ? ttsRace.buffer : null;
+  if (!audio) {
+    console.log(`[twilio-handler] branch=play-gather-tts-fallback-say key=${ttsKey}`);
+  }
   return audio
     ? `<Response statusCallback="${baseUrl}/api/twilio/webhooks/status" statusCallbackMethod="POST"><Play>${baseUrl}/api/twilio/audio/${encodeURIComponent(ttsKey)}</Play><Gather input="speech" speechTimeout="auto" action="${baseUrl}/api/twilio/webhooks/voice" method="POST"/></Response>`
     : `<Response statusCallback="${baseUrl}/api/twilio/webhooks/status" statusCallbackMethod="POST"><Say>${escapeXml(text)}</Say><Gather input="speech" speechTimeout="auto" action="${baseUrl}/api/twilio/webhooks/voice" method="POST"/></Response>`;
