@@ -1,9 +1,11 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export const Route = createFileRoute("/sign-in")({
   component: SignIn,
 });
+
+const REMEMBER_KEY = "flowpilot_remembered_login";
 
 function SignIn() {
   const navigate = useNavigate();
@@ -11,6 +13,28 @@ function SignIn() {
   const passwordRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [remember, setRemember] = useState(true);
+
+  // Prefill email + password from a previous "remember me" sign-in on this
+  // machine. Corrupt/foreign JSON must never crash the page.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(REMEMBER_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { email?: unknown; password?: unknown };
+      if (
+        parsed &&
+        typeof parsed.email === "string" &&
+        typeof parsed.password === "string"
+      ) {
+        if (emailRef.current) emailRef.current.value = parsed.email;
+        if (passwordRef.current) passwordRef.current.value = parsed.password;
+        setRemember(true);
+      }
+    } catch {
+      // Corrupt stored value — ignore and show the empty form.
+    }
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -34,6 +58,14 @@ function SignIn() {
       if (!res.ok) {
         setError(data.error || "Sign in failed");
         return;
+      }
+
+      // Remember-me: persist only on success. Never store on failed sign-in,
+      // never log the password anywhere.
+      if (remember) {
+        localStorage.setItem(REMEMBER_KEY, JSON.stringify({ email, password }));
+      } else {
+        localStorage.removeItem(REMEMBER_KEY);
       }
 
       // Route based on role
@@ -82,6 +114,7 @@ function SignIn() {
             type="email"
             name="email"
             placeholder="you@company.com"
+            autoComplete="email"
             className="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2.5 text-sm bg-white dark:bg-gray-900"
             required
           />
@@ -95,10 +128,20 @@ function SignIn() {
             type="password"
             name="password"
             placeholder="••••••••"
+            autoComplete="current-password"
             className="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2.5 text-sm bg-white dark:bg-gray-900"
             required
           />
         </div>
+        <label className="flex items-center justify-center gap-2 text-sm text-gray-600 dark:text-gray-400 select-none">
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={e => setRemember(e.target.checked)}
+            className="w-4 h-4 rounded accent-indigo-600"
+          />
+          Remember me on this device
+        </label>
         <button
           type="submit"
           disabled={loading}
