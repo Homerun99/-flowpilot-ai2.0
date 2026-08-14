@@ -41,9 +41,15 @@ async function hit(params: Record<string, string>) {
 }
 async function novaSaid(callSid: string): Promise<string> {
   const log = await Bun.file(`${import.meta.dir}/../.run/server.log`).text();
-  const re = new RegExp(`\\[twilio-handler\\] ${callSid} Nova says(?:\\\\([^)]*\\\\))?: ([^\\n]+)`, "g");
   let last = "";
-  for (const m of log.matchAll(re)) last = m[1];
+  for (const line of log.split("\n")) {
+    const marker = `[twilio-handler] ${callSid} Nova says`;
+    if (!line.includes(marker)) continue;
+    const rest = line.slice(line.indexOf("Nova says") + "Nova says".length).trim();
+    // Handle "Nova says: text" and "Nova says(BRANCH): text".
+    const text = rest.replace(/^\([^)]*\):\s*/, "").replace(/^:\s*/, "");
+    if (text) last = text;
+  }
   return last.trim();
 }
 async function postConfig(body: Record<string, unknown>) {
