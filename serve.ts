@@ -108,6 +108,7 @@ for (let attempt = 1; ; attempt++) {
             const callSid = params.get("CallSid") || "";
             const callStatus = params.get("CallStatus") || "";
             const TERMINAL_STATUSES = ["completed", "canceled", "failed", "busy", "no-answer"];
+            console.log(`[serve] status callback callSid=${callSid} status=${callStatus} ws=${workspaceId} action=${TERMINAL_STATUSES.includes(callStatus) ? "finalize" : "upsert"}`);
             if (TERMINAL_STATUSES.includes(callStatus)) {
               finalizeCallRow(workspaceId, callSid).catch((err) =>
                 console.warn("[serve] call finalize failed (non-fatal):", err));
@@ -135,6 +136,10 @@ for (let attempt = 1; ; attempt++) {
           try {
             const body = await req.text();
             const params = new URLSearchParams(body);
+            const callSid = params.get("CallSid") || "";
+            const callStatus = params.get("CallStatus") || "";
+            const speechResult = params.get("SpeechResult") || "";
+            console.log(`[serve] voice webhook callSid=${callSid} status=${callStatus} hasSpeech=${!!speechResult}`);
 
             // Resolve workspace by phone number (To field in Twilio webhook)
             const toNumber = params.get("To") || "";
@@ -154,6 +159,7 @@ for (let attempt = 1; ; attempt++) {
                   workspaceTimezone = wsByPhone.timezone || "UTC";
                   const cfg = (wsByPhone.receptionistConfig as ReceptionistConfig) || undefined;
                   receptionistConfig = cfg ? { ...cfg, transferNumber: wsByPhone.twilioTransferNumber || undefined } : { transferNumber: wsByPhone.twilioTransferNumber || undefined };
+                  console.log(`[serve] voice ws resolved by phone: To=${toNumber} → ws=${workspaceId} tz=${workspaceTimezone}`);
                 }
               }
 
@@ -166,6 +172,7 @@ for (let attempt = 1; ; attempt++) {
                 workspaceTimezone = ws?.timezone || "UTC";
                 const cfg = (ws?.receptionistConfig as ReceptionistConfig) || undefined;
                 receptionistConfig = cfg ? { ...cfg, transferNumber: ws?.twilioTransferNumber || undefined } : { transferNumber: ws?.twilioTransferNumber || undefined };
+                console.warn(`[serve] voice ws fallback (no twilioPhone match): To=${toNumber || "(empty)"} → ws=${workspaceId} tz=${workspaceTimezone}`);
               }
             } catch (e) {
               console.error("Failed to load receptionist config:", e);
@@ -186,16 +193,17 @@ for (let attempt = 1; ; attempt++) {
             // completed + endedAt/durationSec, preserving any richer outcome
             // like appointment_booked). Outcome updates happen inside
             // twilio-handler.
-            const callStatus = params.get("CallStatus") || "";
+            const callStatusForLifecycle = params.get("CallStatus") || "";
             const TERMINAL = ["completed", "canceled", "failed", "busy", "no-answer"];
-            const lifecycle = TERMINAL.includes(callStatus)
+            console.log(`[serve] voice call-log ${TERMINAL.includes(callStatusForLifecycle) ? "finalize" : "upsert"} callSid=${callSid} ws=${workspaceId}`);
+            const lifecycle = TERMINAL.includes(callStatusForLifecycle)
               ? finalizeCallRow(workspaceId, params.get("CallSid") || "")
               : upsertCallRow({
                   workspaceId,
                   callSid: params.get("CallSid") || "",
                   callerNumber: params.get("From") || "",
                   toNumber: params.get("To") || "",
-                  status: callStatus,
+                  status: callStatusForLifecycle,
                 });
             lifecycle.catch((err) => console.warn("[serve] call log upsert failed (non-fatal):", err));
 
