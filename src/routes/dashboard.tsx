@@ -1,5 +1,5 @@
 import { createFileRoute, Link, Outlet, useLocation } from "@tanstack/react-router";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 
 export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
@@ -218,6 +218,23 @@ function ReceptionistParametersCard({ notify }: { notify: (msg: string, type: "s
   // (businessName etc.), so re-send whatever was loaded to avoid clobbering
   // values the Settings persona card owns.
   const [persona, setPersona] = useState<Record<string, unknown>>({});
+  // ── Autosave plumbing ────────────────────────────────────────────────────
+  // dirty: any field changed since the last successful save. Saving uses refs
+  // too so the debounce timer and beforeunload guard always see fresh truth
+  // without re-subscribing on every keystroke.
+  const [dirty, setDirty] = useState(false);
+  const [hasSaved, setHasSaved] = useState(false);
+  const dirtyRef = useRef(false);
+  const savingRef = useRef(false);
+  // After a failed autosave, don't hammer the server with retries — wait for
+  // the next user change (markDirty) or an explicit Save click instead.
+  const suppressAutosaveRef = useRef(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const markDirty = () => {
+    dirtyRef.current = true;
+    suppressAutosaveRef.current = false;
+    setDirty(true);
+  };
 
   useEffect(() => {
     (async () => {
@@ -257,43 +274,123 @@ function ReceptionistParametersCard({ notify }: { notify: (msg: string, type: "s
     })();
   }, []);
 
-  const toggleDay = (day: string) =>
+  const toggleDay = (day: string) => {
+    markDirty();
     setOpenDays(prev => (prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]));
+  };
 
-  const addCondition = () => setKeyQuestions(prev => [...prev, { if: "", thenAsk: [] }]);
-  const removeCondition = (bi: number) => setKeyQuestions(prev => prev.filter((_, i) => i !== bi));
-  const updateConditionIf = (bi: number, v: string) => setKeyQuestions(prev => prev.map((b, i) => (i === bi ? { ...b, if: v } : b)));
-  const addQuestion = (bi: number) => setKeyQuestions(prev => prev.map((b, i) => (i === bi ? { ...b, thenAsk: [...b.thenAsk, ""] } : b)));
-  const removeQuestion = (bi: number, qi: number) => setKeyQuestions(prev => prev.map((b, i) => (i === bi ? { ...b, thenAsk: b.thenAsk.filter((_, j) => j !== qi) } : b)));
-  const updateQuestion = (bi: number, qi: number, v: string) => setKeyQuestions(prev => prev.map((b, i) => (i === bi ? { ...b, thenAsk: b.thenAsk.map((q, j) => (j === qi ? v : q)) } : b)));
+  const addCondition = () => {
+    markDirty();
+    setKeyQuestions(prev => [...prev, { if: "", thenAsk: [] }]);
+  };
+  const removeCondition = (bi: number) => {
+    markDirty();
+    setKeyQuestions(prev => prev.filter((_, i) => i !== bi));
+  };
+  const updateConditionIf = (bi: number, v: string) => {
+    markDirty();
+    setKeyQuestions(prev => prev.map((b, i) => (i === bi ? { ...b, if: v } : b)));
+  };
+  const addQuestion = (bi: number) => {
+    markDirty();
+    setKeyQuestions(prev => prev.map((b, i) => (i === bi ? { ...b, thenAsk: [...b.thenAsk, ""] } : b)));
+  };
+  const removeQuestion = (bi: number, qi: number) => {
+    markDirty();
+    setKeyQuestions(prev => prev.map((b, i) => (i === bi ? { ...b, thenAsk: b.thenAsk.filter((_, j) => j !== qi) } : b)));
+  };
+  const updateQuestion = (bi: number, qi: number, v: string) => {
+    markDirty();
+    setKeyQuestions(prev => prev.map((b, i) => (i === bi ? { ...b, thenAsk: b.thenAsk.map((q, j) => (j === qi ? v : q)) } : b)));
+  };
 
-  const handleSave = async () => {
+  // Build the exact payload the backend merge expects. Reuses the loaded
+  // persona fields so autosave can't clobber values the Settings page owns.
+  const buildSavePayload = () => {
+    const hasHours = openStart.trim() !== "" && openEnd.trim() !== "";
+    const kqTrimmed = keyQuestions
+      .map(b => ({ if: b.if.trim(), thenAsk: b.thenAsk.map(q => q.trim()).filter(q => q !== "") }))
+      .filter(b => b.if !== "");
+    return {
+      ...persona,
+      openDays,
+      openHours: hasHours ? { start: openStart, end: openEnd } : null,
+      customInstructions: instructions,
+      appointmentSpacer: spacer,
+      keyQuestions: kqTrimmed.length > 0 ? kqTrimmed : null,
+    };
+  };
+
+  // Shared by the explicit Save button (silent=false → toast) and the debounced
+  // autosave (silent=true → status indicator only). Guards against concurrent
+  // saves via savingRef. Clears the dirty flag optimistically so changes made
+  // while the request is in flight (markDirty re-fires) can't be wrongly
+  // reported as saved; on failure the flag is restored.
+  const doSave = async (silent: boolean) => {
+    if (savingRef.current) return false;
+    savingRef.current = true;
     setSaving(true);
+    dirtyRef.current = false;
+    setDirty(false);
     try {
-      const hasHours = openStart.trim() !== "" && openEnd.trim() !== "";
-      const kqTrimmed = keyQuestions
-        .map(b => ({ if: b.if.trim(), thenAsk: b.thenAsk.map(q => q.trim()).filter(q => q !== "") }))
-        .filter(b => b.if !== "");
       const res = await fetch("/api/workspace/receptionist-config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...persona,
-          openDays,
-          openHours: hasHours ? { start: openStart, end: openEnd } : null,
-          customInstructions: instructions,
-          appointmentSpacer: spacer,
-          keyQuestions: kqTrimmed.length > 0 ? kqTrimmed : null,
-        }),
+        body: JSON.stringify(buildSavePayload()),
       });
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
-      notify("Receptionist parameters saved.", "success");
+      setHasSaved(true);
+      if (!silent) notify("Receptionist parameters saved.", "success");
+      return true;
     } catch (e) {
-      notify(e instanceof Error ? e.message : "Failed to save receptionist parameters", "error");
+      dirtyRef.current = true;
+      setDirty(true);
+      if (silent) suppressAutosaveRef.current = true;
+      if (!silent) notify(e instanceof Error ? e.message : "Failed to save receptionist parameters", "error");
+      return false;
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
+
+  const handleSave = () => void doSave(false);
+
+  // Debounced autosave — fires ~900ms after the last change to ANY field.
+  // Skips while the initial config is still loading, while a save is in
+  // flight, when nothing is dirty, and after a failed autosave (retry waits
+  // for the next change or an explicit Save). Each keystroke resets the timer.
+  // `saving` is a dep so edits made mid-flight re-arm a follow-up save once
+  // the in-flight request finishes.
+  useEffect(() => {
+    if (loading || savingRef.current || !dirtyRef.current || suppressAutosaveRef.current) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null;
+      void doSave(true);
+    }, 900);
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+    };
+  }, [openDays, openStart, openEnd, instructions, spacer, keyQuestions, dirty, saving, loading]);
+
+  // beforeunload guard — belt-and-suspenders; with autosave this should
+  // rarely fire, but a refresh mid-keystroke (or mid-save) still prompts
+  // instead of silently discarding. Attached only while dirty or saving.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (dirtyRef.current || savingRef.current) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    if (dirty || saving) window.addEventListener("beforeunload", handler);
+    else window.removeEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty, saving]);
 
   return (
     <section>
@@ -345,7 +442,7 @@ function ReceptionistParametersCard({ notify }: { notify: (msg: string, type: "s
                   <input
                     type="time"
                     value={openStart}
-                    onChange={e => setOpenStart(e.target.value)}
+                    onChange={e => { setOpenStart(e.target.value); markDirty(); }}
                     className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-2.5 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </label>
@@ -354,7 +451,7 @@ function ReceptionistParametersCard({ notify }: { notify: (msg: string, type: "s
                   <input
                     type="time"
                     value={openEnd}
-                    onChange={e => setOpenEnd(e.target.value)}
+                    onChange={e => { setOpenEnd(e.target.value); markDirty(); }}
                     className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-2.5 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </label>
@@ -379,6 +476,7 @@ function ReceptionistParametersCard({ notify }: { notify: (msg: string, type: "s
                     onChange={e => {
                       const n = e.target.value === "" ? NaN : Number(e.target.value);
                       setSpacer(Number.isFinite(n) && n >= 0 ? Math.round(n) : null);
+                      markDirty();
                     }}
                     placeholder="0"
                     className="w-24 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-2.5 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -396,7 +494,7 @@ function ReceptionistParametersCard({ notify }: { notify: (msg: string, type: "s
                     <button
                       key={v}
                       type="button"
-                      onClick={() => setSpacer(v)}
+                      onClick={() => { setSpacer(v); markDirty(); }}
                       className={`rounded-lg border px-2.5 py-1 text-xs font-medium cursor-pointer transition-colors ${active
                         ? "border-indigo-600 bg-indigo-600 text-white"
                         : "border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:border-indigo-300 dark:hover:border-indigo-700"}`}
@@ -413,7 +511,7 @@ function ReceptionistParametersCard({ notify }: { notify: (msg: string, type: "s
               <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Free response</p>
               <textarea
                 value={instructions}
-                onChange={e => setInstructions(e.target.value)}
+                onChange={e => { setInstructions(e.target.value); markDirty(); }}
                 rows={3}
                 placeholder="How should the AI receptionist act? What questions should it ask callers? Example: Always confirm the service address before booking an appointment."
                 className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y"
@@ -499,7 +597,15 @@ function ReceptionistParametersCard({ notify }: { notify: (msg: string, type: "s
               )}
             </div>
             <div className="flex items-center justify-end gap-3 pt-1">
-              <span className="text-xs text-gray-400">Applies to new calls</span>
+              <span className="text-xs text-gray-400" aria-live="polite">
+                {saving
+                  ? "Saving…"
+                  : dirty
+                    ? "Unsaved changes"
+                    : hasSaved
+                      ? "Saved ✓"
+                      : "Applies to new calls"}
+              </span>
               <button
                 onClick={handleSave}
                 disabled={saving}
