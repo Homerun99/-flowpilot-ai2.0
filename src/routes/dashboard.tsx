@@ -649,10 +649,42 @@ function Dashboard() {
   const [deleteTarget, setDeleteTarget] = useState<{ kind: "lead" | "appointment" | "doc"; id: string; label: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+  // Client's business email (workspaces.fromEmail) for the header pill; null
+  // when the workspace isn't provisioned yet — pill hides in that case.
+  const [businessEmail, setBusinessEmail] = useState<string | null>(null);
+  const [copiedEmail, setCopiedEmail] = useState(false);
   const location = useLocation();
   const isDashboardIndex = location.pathname === "/dashboard";
 
   useEffect(() => { const n = localStorage.getItem("fp_client_name"); if (n) setName(n); }, []);
+  // Fetch the business email for the header pill. Never crashes on failure —
+  // the pill simply stays hidden until an email is available.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/workspace/email-config");
+        if (!res.ok) return;
+        const d = await res.json();
+        const em = typeof d?.from_email === "string" ? d.from_email.trim() : "";
+        if (em) setBusinessEmail(em);
+      } catch (e) {
+        console.error("Failed to load email config:", e);
+      }
+    })();
+  }, []);
+
+  const copyBusinessEmail = async () => {
+    if (!businessEmail) return;
+    try {
+      await navigator.clipboard.writeText(businessEmail);
+      setCopiedEmail(true);
+      setTimeout(() => setCopiedEmail(false), 1500);
+    } catch {
+      // Clipboard may be blocked (e.g. insecure context) — the pill still
+      // displays the address for manual copying.
+    }
+  };
+
   useEffect(() => {
     (async () => {
       try {
@@ -792,6 +824,18 @@ function Dashboard() {
           </nav>
         </div>
         <div className="flex items-center gap-4">
+          {businessEmail && (
+            <button
+              type="button"
+              onClick={copyBusinessEmail}
+              title={`Copy ${businessEmail} to clipboard`}
+              className="hidden md:inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-gray-200 dark:border-gray-700 bg-indigo-50/10 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:border-indigo-300 dark:hover:border-indigo-600 cursor-pointer transition-colors"
+            >
+              <span aria-hidden="true">{copiedEmail ? "✓" : "📧"}</span>
+              <span className="max-w-[260px] truncate">{businessEmail}</span>
+              {copiedEmail && <span className="font-semibold text-indigo-500 dark:text-indigo-400">Copied!</span>}
+            </button>
+          )}
           <span className="text-sm text-gray-500 dark:text-gray-400">👤 {name}</span>
           <Link to="/" className="text-sm text-gray-400 hover:text-red-500">Sign out</Link>
         </div>
