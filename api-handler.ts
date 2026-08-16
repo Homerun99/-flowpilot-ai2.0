@@ -2111,6 +2111,7 @@ export async function handleApiRequest(
 
       // Resolve payment link: per-invoice first, fall back to workspace default
       const paymentLink = body.payment_link?.trim() || ws.paymentLink || null;
+      const businessName = ws.fromName || ws.name || "FlowPilot AI";
 
       // 1. Generate invoice data via AI
       const invoiceData = await generateInvoice(
@@ -2120,11 +2121,12 @@ export async function handleApiRequest(
           amount: body.amount,
         },
         workspaceId,
+        undefined,
+        businessName,
       );
 
       // 2. Generate PDF
       const { generateInvoicePdf } = await import("./src/lib/pdf-invoice");
-      const businessName = ws.fromName || ws.name || "FlowPilot AI";
       const pdfBuffer = await generateInvoicePdf({
         invoice: invoiceData,
         businessName,

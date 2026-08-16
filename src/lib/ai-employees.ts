@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { db } from "~/db/index";
-import { activityLog, documents } from "~/db/schema";
+import { activityLog, documents, workspaces } from "~/db/schema";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { chunkText, parseDocument } from "~/lib/document-parser";
@@ -319,8 +319,24 @@ export async function generateInvoice(
   input: InvoiceInput,
   workspaceId: string,
   employeeConfig?: EmployeeConfig,
+  businessName?: string,
 ): Promise<InvoiceOutput> {
   const openai = getOpenAI();
+
+  // Resolve the business name for the email signature: explicit param first,
+  // then the workspace's own record (fromName, then name).
+  let resolvedBusinessName = businessName?.trim() || "";
+  if (!resolvedBusinessName) {
+    try {
+      const ws = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, workspaceId),
+        columns: { name: true, fromName: true },
+      });
+      resolvedBusinessName = ws?.fromName || ws?.name || "";
+    } catch {
+      // Non-fatal: fall back to the prompt's generic signing rule.
+    }
+  }
 
   const baseSystemPrompt =
     "You are an invoice clerk for a small business. " +
@@ -330,7 +346,12 @@ export async function generateInvoice(
     '"emailBody" (a professional email body requesting payment), ' +
     'and "lineItems" (an array of objects with description, quantity, unitPrice, and total). ' +
     "Use the service description and amount provided to create at least one line item. " +
-    "The line items should total to the provided amount.";
+    "The line items should total to the provided amount. " +
+    "The email body must be written as if from the business itself and must end with a signature line containing ONLY the business name (no job title, no contact details, no brackets). " +
+    "NEVER include placeholder signature blocks or bracketed placeholders such as [Your Name], [Your Position], [Your Company], or [Your Contact Information] — do not use square brackets anywhere in the email body." +
+    (resolvedBusinessName
+      ? `\nThe business sending this invoice is "${resolvedBusinessName}". Sign the email exactly with: ${resolvedBusinessName}`
+      : "");
 
   const systemPrompt = employeeConfig
     ? `${baseSystemPrompt}\n\nYour name is ${employeeConfig.name}. Personality: ${employeeConfig.personality}. ${employeeConfig.instructions}`
@@ -361,6 +382,19 @@ export async function generateInvoice(
     const parsed = JSON.parse(raw) as InvoiceOutput;
     if (!parsed.invoiceNumber || !parsed.emailBody || !Array.isArray(parsed.lineItems)) {
       throw new Error("OpenAI response missing required fields (invoiceNumber, emailBody, lineItems)");
+    }
+
+    // Hard guarantee: strip any whole-line bracketed placeholder (e.g. "[Your Name]",
+    // "[Your Position]", "[Your Company]", "[Your Contact Information]") the model
+    // might slip in, then sign with the resolved business name if missing.
+    parsed.emailBody = parsed.emailBody
+      .split("\n")
+      .filter((line) => !/^\s*\[[^\]]{1,60}\]\s*$/.test(line))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    if (resolvedBusinessName && !parsed.emailBody.endsWith(resolvedBusinessName)) {
+      parsed.emailBody = `${parsed.emailBody}\n\n${resolvedBusinessName}`;
     }
 
     await logActivity(workspaceId, "invoice_clerk", `Generated invoice ${parsed.invoiceNumber} for ${input.customerName}`, {
