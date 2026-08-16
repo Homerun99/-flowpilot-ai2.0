@@ -31,6 +31,7 @@ import {
   type EmployeeConfig,
 } from "./src/lib/ai-employees";
 import { sendEmail } from "./src/lib/email";
+import { parseAddressField, parseEnvelope } from "./src/lib/email-parse";
 import { hashPassword, verifyPassword } from "./src/lib/auth/password";
 import {
   createSessionToken,
@@ -1229,20 +1230,31 @@ export async function handleApiRequest(
     if (pathname === "/api/webhooks/email/inbound" && method === "POST") {
       // Always answer 200 so the mail provider stops retrying, even on errors.
       try {
-        let from = "", fromName = "", to = "", subject = "", bodyText = "";
+        let fromRaw = "", fromNameRaw = "", toRaw = "", subject = "", bodyText = "", envelopeRaw: string | null = null;
         const contentType = request.headers.get("content-type") || "";
         if (contentType.includes("application/json")) {
           const j = await request.json() as Record<string, unknown>;
-          from = String(j.from ?? ""); fromName = String(j.fromName ?? "");
-          to = String(j.to ?? ""); subject = String(j.subject ?? "");
+          fromRaw = String(j.from ?? ""); fromNameRaw = String(j.fromName ?? "");
+          toRaw = String(j.to ?? ""); subject = String(j.subject ?? "");
           bodyText = String(j.body ?? "");
+          envelopeRaw = j.envelope ? String(j.envelope) : null;
         } else {
           const form = await request.formData();
-          from = String(form.get("from") ?? ""); fromName = String(form.get("from_name") ?? "");
-          to = String(form.get("to") ?? ""); subject = String(form.get("subject") ?? "");
+          fromRaw = String(form.get("from") ?? ""); fromNameRaw = String(form.get("from_name") ?? "");
+          toRaw = String(form.get("to") ?? ""); subject = String(form.get("subject") ?? "");
           bodyText = String(form.get("text") ?? form.get("html") ?? "");
+          envelopeRaw = String(form.get("envelope") ?? "") || null;
         }
-        from = from.trim(); to = to.trim();
+        // SendGrid sends the raw From header ("Name <a@b.c>") plus an envelope
+        // JSON field. Parse both so lead.email / dedupe / reply recipient always
+        // use a bare address. Never crash on malformed input — fallback = raw.
+        const parsedFrom = parseAddressField(fromRaw);
+        const envelope = parseEnvelope(envelopeRaw);
+        const from = (!parsedFrom.fallback && parsedFrom.email)
+          ? parsedFrom.email
+          : (envelope?.from || parsedFrom.email);
+        const to = envelope?.to?.[0] || parseAddressField(toRaw).email || toRaw.trim();
+        const fromName = parsedFrom.name || fromNameRaw || null;
         if (!from || !to) {
           return new Response(JSON.stringify({ status: "ignored", reason: "missing from/to" }), {
             status: 200, headers: { "Content-Type": "application/json" },
@@ -1348,8 +1360,14 @@ export async function handleApiRequest(
         }
         await db.update(emails).set(updates).where(eq(emails.id, emailId));
         // Fire the automation trigger (fire-and-forget — never delays the 200)
-        fireAutomationTrigger(ws.id, "new_email", { emailId, from, fromName, to, subject })
-          .catch((err) => console.error("[email-inbound] automation trigger failed:", err));
+        // Fire the new_email automation with a complete payload so generate_reply
+        // actions draft from the actual message (they never auto-send).
+        fireAutomationTrigger(ws.id, "new_email", {
+          emailId, from, fromName, to, subject,
+          name: fromName || from,
+          message: bodyText.slice(0, 2000),
+          inquiryText: `Subject: ${subject || "(no subject)"}\n\n${bodyText}`.slice(0, 2000),
+        }).catch((err) => console.error("[email-inbound] automation trigger failed:", err));
         return new Response(JSON.stringify({
           status: "ok",
           emailId,
@@ -1365,7 +1383,7 @@ export async function handleApiRequest(
     }
     // ── GET /api/emails ── Email Inbox list (newest first) ────────────
     if (pathname === "/api/emails" && method === "GET") {
-      const wsId = url.searchParams.get("workspace") || workspaceId;
+      const wsId = workspaceId; // auth-scoped — never trust a client workspace param
       const result = await db.query.emails.findMany({
         where: eq(emails.workspaceId, wsId),
         orderBy: desc(emails.createdAt),
@@ -2464,10 +2482,11 @@ export async function handleApiRequest(
       // 6. invoices (refs workspaces only)
       // 7. documents (refs workspaces only)
       // 8. automations (refs ai_employees + workspaces)
-      // 9. leads (refs workspaces only)
-      // 10. ai_employees (refs workspaces only)
-      // 11. users (refs workspaces only)
-      // 12. workspaces (the workspace row itself)
+      // 9. emails (refs leads + workspaces — MUST go before leads)
+      // 10. leads (refs workspaces only)
+      // 11. ai_employees (refs workspaces only)
+      // 12. users (refs workspaces only)
+      // 13. workspaces (the workspace row itself)
 
       await db.delete(activityLog).where(eq(activityLog.workspaceId, workspaceId));
       await db.delete(automationRuns).where(eq(automationRuns.workspaceId, workspaceId));
@@ -2477,6 +2496,7 @@ export async function handleApiRequest(
       await db.delete(invoices).where(eq(invoices.workspaceId, workspaceId));
       await db.delete(documents).where(eq(documents.workspaceId, workspaceId));
       await db.delete(automations).where(eq(automations.workspaceId, workspaceId));
+      await db.delete(emails).where(eq(emails.workspaceId, workspaceId));
       await db.delete(leads).where(eq(leads.workspaceId, workspaceId));
       await db.delete(aiEmployees).where(eq(aiEmployees.workspaceId, workspaceId));
       await db.delete(users).where(eq(users.workspaceId, workspaceId));
