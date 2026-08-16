@@ -94,6 +94,89 @@ function Admin() {
   const [inviteSent, setInviteSent] = useState(false);
   const [inviteSending, setInviteSending] = useState(false);
 
+  // Phone number pool
+  const [phoneNumbers, setPhoneNumbers] = useState<
+    { id: string; number: string; label: string | null; status: string; workspaceId: string | null; workspaceName: string | null; createdAt: string | null }[]
+  >([]);
+  const [phoneLoading, setPhoneLoading] = useState(false);
+  const [newNumber, setNewNumber] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [phoneBusy, setPhoneBusy] = useState(false);
+  const [phoneMsg, setPhoneMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+
+  const loadPhoneNumbers = async () => {
+    setPhoneLoading(true);
+    try {
+      const res = await fetch("/api/admin/phone-numbers");
+      if (res.ok) {
+        const d = await res.json();
+        setPhoneNumbers(d.numbers || []);
+      }
+    } catch (e) {
+      console.error("Failed to load phone numbers:", e);
+    } finally {
+      setPhoneLoading(false);
+    }
+  };
+
+  // ── Load phone pool after auth ──────────────────────────────────────
+
+  useEffect(() => {
+    if (!authorized) return;
+    loadPhoneNumbers();
+  }, [authorized]);
+
+  const addPhoneNumber = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const number = newNumber.trim();
+    if (!/^\+[1-9]\d{6,14}$/.test(number)) {
+      setPhoneMsg({ type: "err", text: "Number must be in E.164 format, e.g. +14472514467" });
+      return;
+    }
+    setPhoneBusy(true);
+    setPhoneMsg(null);
+    try {
+      const res = await fetch("/api/admin/phone-numbers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ number, label: newLabel.trim() || undefined }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setNewNumber("");
+        setNewLabel("");
+        setPhoneMsg({ type: "ok", text: `Added ${number} to the pool.` });
+        loadPhoneNumbers();
+      } else {
+        setPhoneMsg({ type: "err", text: d.error || `Failed to add number (${res.status})` });
+      }
+    } catch (err) {
+      setPhoneMsg({ type: "err", text: "Network error — please try again." });
+    } finally {
+      setPhoneBusy(false);
+    }
+  };
+
+  const deletePhoneNumber = async (id: string, number: string) => {
+    if (!window.confirm(`Remove ${number} from the pool?`)) return;
+    setPhoneBusy(true);
+    setPhoneMsg(null);
+    try {
+      const res = await fetch(`/api/admin/phone-numbers/${id}`, { method: "DELETE" });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setPhoneMsg({ type: "ok", text: `Removed ${number}.` });
+        loadPhoneNumbers();
+      } else {
+        setPhoneMsg({ type: "err", text: d.error || `Failed to remove number (${res.status})` });
+      }
+    } catch (err) {
+      setPhoneMsg({ type: "err", text: "Network error — please try again." });
+    } finally {
+      setPhoneBusy(false);
+    }
+  };
+
   // ── Auth guard ──────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -259,6 +342,113 @@ function Admin() {
             <NavCard to="/dashboard/automations" emoji="⚡" title="Automations" desc="Create and manage workflow automations." />
             <NavCard to="/dashboard/ai-employees" emoji="🤖" title="AI Employees" desc="View and manage your AI employee team." />
             <NavCard to="/client/deck" emoji="📋" title="Onboarding Deck" desc="Replay the onboarding setup wizard." />
+          </div>
+        </section>
+
+        {/* Phone Number Input */}
+        <section>
+          <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-gray-700 dark:text-gray-300">📞 Phone number Input</h2>
+              <span className="text-xs text-gray-400">{phoneNumbers.filter(n => n.status === "available").length} available</span>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              {/* Add form */}
+              <form onSubmit={addPhoneNumber} className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="tel"
+                  value={newNumber}
+                  onChange={(e) => setNewNumber(e.target.value)}
+                  placeholder="+1XXXXXXXXXX"
+                  className="flex-1 rounded-lg border border-gray-200 dark:border-gray-700 px-3.5 py-2 text-sm font-mono bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors"
+                />
+                <input
+                  type="text"
+                  value={newLabel}
+                  onChange={(e) => setNewLabel(e.target.value)}
+                  placeholder="Label (optional)"
+                  className="flex-1 rounded-lg border border-gray-200 dark:border-gray-700 px-3.5 py-2 text-sm bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors"
+                />
+                <button
+                  type="submit"
+                  disabled={phoneBusy}
+                  className="shrink-0 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  {phoneBusy ? "Adding…" : "+ Add number"}
+                </button>
+              </form>
+
+              {phoneMsg && (
+                <div className={`rounded-lg px-3.5 py-2.5 text-xs ${
+                  phoneMsg.type === "ok"
+                    ? "border border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300"
+                    : "border border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300"
+                }`}>
+                  {phoneMsg.type === "ok" ? "✅ " : "⚠️ "}{phoneMsg.text}
+                </div>
+              )}
+
+              {/* Table / empty state */}
+              {phoneLoading ? (
+                <div className="flex items-center justify-center py-8 text-sm text-gray-400">
+                  <Spinner /> <span className="ml-2">Loading numbers…</span>
+                </div>
+              ) : phoneNumbers.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-5 py-8 text-center">
+                  <span className="text-2xl block mb-2">📭</span>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">No numbers yet — add your first number above.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-100 dark:border-gray-800 text-left text-xs text-gray-400 uppercase tracking-wide">
+                        <th className="py-2 pr-3 font-medium">Number</th>
+                        <th className="py-2 pr-3 font-medium">Label</th>
+                        <th className="py-2 pr-3 font-medium">Status</th>
+                        <th className="py-2 pr-3 font-medium">Added</th>
+                        <th className="py-2 font-medium text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                      {phoneNumbers.map((n) => (
+                        <tr key={n.id} className="text-gray-700 dark:text-gray-300">
+                          <td className="py-2.5 pr-3 font-mono font-semibold text-gray-900 dark:text-gray-100">{n.number}</td>
+                          <td className="py-2.5 pr-3">{n.label || <span className="text-gray-400">—</span>}</td>
+                          <td className="py-2.5 pr-3">
+                            {n.status === "available" ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Available
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" /> Assigned{n.workspaceName ? ` · ${n.workspaceName}` : ""}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 pr-3 text-xs text-gray-400">
+                            {n.createdAt ? new Date(n.createdAt).toLocaleDateString() : "—"}
+                          </td>
+                          <td className="py-2.5 text-right">
+                            {n.status === "available" ? (
+                              <button
+                                onClick={() => deletePhoneNumber(n.id, n.number)}
+                                disabled={phoneBusy}
+                                className="rounded-lg border border-red-200 dark:border-red-900 px-2.5 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors disabled:opacity-50 cursor-pointer"
+                              >
+                                Delete
+                              </button>
+                            ) : (
+                              <span className="text-xs text-gray-400">In use</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         </section>
 

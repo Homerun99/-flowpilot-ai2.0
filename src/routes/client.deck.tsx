@@ -383,6 +383,9 @@ function SlidePhone({ onAdvance }: SlideContentProps) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  // Admin pool: available numbers the client can pick instead of auto-provisioning
+  const [poolNumbers, setPoolNumbers] = useState<{ number: string; label: string | null }[]>([]);
+  const [selectedNumber, setSelectedNumber] = useState<string>("");
 
   // Load saved phone config on mount
   useEffect(() => {
@@ -401,6 +404,24 @@ function SlidePhone({ onAdvance }: SlideContentProps) {
         // Leave defaults — the client can still pick an option and retry on save
       } finally {
         setLoading(false);
+      }
+    })();
+  }, []);
+
+  // Load the admin-managed pool of available numbers (non-blocking).
+  // Only used when the client picks "Get a new number" and no number is
+  // assigned yet; if the pool is empty or unreachable, Save falls back to
+  // the existing auto-provision path so onboarding never dead-ends.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/phone-numbers/available");
+        if (res.ok) {
+          const data = await res.json();
+          setPoolNumbers(data.numbers || []);
+        }
+      } catch {
+        // Ignore — fall back to auto-provision
       }
     })();
   }, []);
@@ -438,8 +459,36 @@ function SlidePhone({ onAdvance }: SlideContentProps) {
     setProvisionNote(null);
     let outcome: "advance" | "success" | "note" = "advance";
 
-    // 1. Auto-provision when no number is assigned yet
-    if (!twilioPhone && !provisionAttempted) {
+    // 1. Assign a number when none is set yet.
+    //    a) Pool pick: client chose a number from the admin pool — assign it
+    //       directly (pool numbers are already owned; no Twilio provisioning).
+    //    b) Fallback: no pool (or none picked) → auto-provision as before.
+    if (!twilioPhone && phoneMode === "provisioned" && selectedNumber) {
+      setConnecting(true);
+      try {
+        const res = await fetch("/api/workspace/phone-number", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ number: selectedNumber }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data.success && data.twilio_phone) {
+          setTwilioPhone(data.twilio_phone);
+          setSelectedNumber("");
+          setJustProvisioned(true);
+          outcome = "success";
+        } else {
+          setProvisionNote(data.error || "We couldn't assign that number right now — you can finish in Settings.");
+          outcome = "note";
+        }
+      } catch {
+        setProvisionNote("We couldn't assign that number right now — you can finish in Settings.");
+        outcome = "note";
+      } finally {
+        setProvisionAttempted(true);
+        setConnecting(false);
+      }
+    } else if (!twilioPhone && !provisionAttempted) {
       setConnecting(true);
       try {
         const res = await fetch("/api/workspace/phone-config/provision", {
@@ -634,9 +683,32 @@ function SlidePhone({ onAdvance }: SlideContentProps) {
               </div>
             ) : (
               <div className="space-y-2">
-                <p className="text-sm text-gray-600 dark:text-gray-300">
-                  We'll set up your new number automatically when you continue.
-                </p>
+                {poolNumbers.length > 0 ? (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                      Choose your number
+                    </label>
+                    <select
+                      value={selectedNumber}
+                      onChange={(e) => { setSelectedNumber(e.target.value); setProvisionNote(null); setJustProvisioned(false); }}
+                      className="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3.5 py-2.5 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors"
+                    >
+                      <option value="">Select a number…</option>
+                      {poolNumbers.map((n) => (
+                        <option key={n.number} value={n.number}>
+                          {n.number}{n.label ? ` — ${n.label}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-400 mt-1.5">
+                      Pick the number you want your AI receptionist to answer on.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-600 dark:text-gray-300">
+                    We'll set up your new number automatically when you continue.
+                  </p>
+                )}
                 {provisionNote && <p className="text-sm text-amber-700 dark:text-amber-400">⚠️ {provisionNote}</p>}
                 {connecting && (
                   <p className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300"><span className="animate-spin">⏳</span> Connecting your number…</p>

@@ -301,6 +301,25 @@ export const calls = pgTable(
   ],
 );
 
+// ── Phone number pool ──────────────────────────────────────────────────────
+
+/**
+ * Admin-managed pool of phone numbers that clients can pick from during
+ * onboarding ("Get a new number" → choose from the pool). Pool numbers are
+ * already owned by the business — assignment is just a DB update, no Twilio
+ * provisioning API call. status: 'available' | 'assigned'; an assigned row
+ * records which workspace took it (workspaceId + assignedAt).
+ */
+export const phoneNumbers = pgTable("phone_numbers", {
+  id: text("id").primaryKey(),
+  number: varchar("number", { length: 20 }).notNull().unique(),
+  label: varchar("label", { length: 100 }),
+  status: varchar("status", { length: 20 }).notNull().default("available"),
+  workspaceId: text("workspace_id").references(() => workspaces.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  assignedAt: timestamp("assigned_at"),
+});
+
 // ── Type exports ─────────────────────────────────────────────────────────
 
 export type Workspace = typeof workspaces.$inferSelect;
@@ -316,3 +335,4 @@ export type ActivityLog = typeof activityLog.$inferSelect;
 export type Document = typeof documents.$inferSelect;
 export type Email = typeof emails.$inferSelect;
 export type Call = typeof calls.$inferSelect;
+export type PhoneNumber = typeof phoneNumbers.$inferSelect;

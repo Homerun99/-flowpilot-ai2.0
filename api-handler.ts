@@ -16,6 +16,7 @@ import {
   users,
   calls,
   emails,
+  phoneNumbers,
   MAX_KEY_QUESTION_BLOCKS,
   MAX_KEY_QUESTIONS_PER_BLOCK,
 } from "./src/db/schema";
@@ -44,6 +45,20 @@ import { getSession, DEMO_WORKSPACE } from "./src/lib/auth/session";
 import { startDomainVerification, checkDomainVerification } from "./src/lib/sendgrid";
 import { fireAutomationTrigger } from "./src/lib/automation-trigger";
 import { twilioConfigured, provisionForWorkspace } from "./src/lib/twilio-provision";
+
+/**
+ * Admin-role guard for /api/admin/* routes. The JWT session payload does not
+ * carry a role, so we look the user up in the DB (same rule the admin UI uses:
+ * session user role === 'admin').
+ */
+async function requireAdmin(session: { userId: string | null; isDemo: boolean }): Promise<boolean> {
+  if (!session.userId || session.isDemo) return false;
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, session.userId),
+    columns: { role: true },
+  });
+  return user?.role === "admin";
+}
 
 export async function handleApiRequest(
   pathname: string,
@@ -1941,6 +1956,166 @@ export async function handleApiRequest(
         twilio_sid: result.sid,
         phone_mode: "provisioned",
       }), { status: 201, headers: { "Content-Type": "application/json" } });
+    }
+
+    // ── GET /api/admin/phone-numbers ── admin-managed phone pool ────
+    if (pathname === "/api/admin/phone-numbers" && method === "GET") {
+      if (!(await requireAdmin(session))) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const rows = await db
+        .select({
+          id: phoneNumbers.id,
+          number: phoneNumbers.number,
+          label: phoneNumbers.label,
+          status: phoneNumbers.status,
+          workspaceId: phoneNumbers.workspaceId,
+          createdAt: phoneNumbers.createdAt,
+          assignedAt: phoneNumbers.assignedAt,
+          workspaceName: workspaces.name,
+        })
+        .from(phoneNumbers)
+        .leftJoin(workspaces, eq(phoneNumbers.workspaceId, workspaces.id))
+        .orderBy(desc(phoneNumbers.createdAt));
+      return new Response(JSON.stringify({ numbers: rows }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // ── POST /api/admin/phone-numbers ── add a number to the pool ───
+    if (pathname === "/api/admin/phone-numbers" && method === "POST") {
+      if (!(await requireAdmin(session))) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const body = await request.json() as { number?: string; label?: string };
+      const number = (body.number || "").trim();
+      if (!/^\+[1-9]\d{6,14}$/.test(number)) {
+        return new Response(JSON.stringify({ error: "Number must be in E.164 format, e.g. +14472514467" }), {
+          status: 400, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const existing = await db.query.phoneNumbers.findFirst({
+        where: eq(phoneNumbers.number, number),
+        columns: { id: true },
+      });
+      if (existing) {
+        return new Response(JSON.stringify({ error: "That number is already in the pool" }), {
+          status: 409, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const label = (body.label || "").trim().slice(0, 100) || null;
+      const id = crypto.randomUUID();
+      await db.insert(phoneNumbers).values({ id, number, label, status: "available", createdAt: new Date() });
+      return new Response(JSON.stringify({ success: true, id, number, label }), {
+        status: 201, headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // ── DELETE /api/admin/phone-numbers/:id ── remove from the pool ─
+    {
+      const adminDeleteMatch = pathname.match(/^\/api\/admin\/phone-numbers\/([^/]+)$/);
+      if (adminDeleteMatch && method === "DELETE") {
+        if (!(await requireAdmin(session))) {
+          return new Response(JSON.stringify({ error: "Admin access required" }), {
+            status: 403, headers: { "Content-Type": "application/json" },
+          });
+        }
+        const row = await db.query.phoneNumbers.findFirst({
+          where: eq(phoneNumbers.id, adminDeleteMatch[1]),
+          columns: { id: true, status: true },
+        });
+        if (!row) {
+          return new Response(JSON.stringify({ error: "Phone number not found" }), {
+            status: 404, headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (row.status === "assigned") {
+          return new Response(JSON.stringify({ error: "Cannot delete a number that is assigned to a workspace" }), {
+            status: 400, headers: { "Content-Type": "application/json" },
+          });
+        }
+        await db.delete(phoneNumbers).where(eq(phoneNumbers.id, row.id));
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // ── GET /api/phone-numbers/available ── pickable numbers ────────
+    // Workspace auth required (any logged-in user). Returns only rows
+    // with status='available' — assigned numbers never leak out.
+    if (pathname === "/api/phone-numbers/available" && method === "GET") {
+      if (session.isDemo || !session.userId) {
+        return new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const rows = await db.query.phoneNumbers.findMany({
+        where: eq(phoneNumbers.status, "available"),
+        columns: { number: true, label: true },
+        orderBy: desc(phoneNumbers.createdAt),
+      });
+      return new Response(JSON.stringify({ numbers: rows }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // ── POST /api/workspace/phone-number ── assign a pool number ────
+    if (pathname === "/api/workspace/phone-number" && method === "POST") {
+      if (session.isDemo || !session.userId) {
+        return new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const body = await request.json() as { number?: string };
+      const number = (body.number || "").trim();
+      if (!number) {
+        return new Response(JSON.stringify({ error: "number is required" }), {
+          status: 400, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const poolRow = await db.query.phoneNumbers.findFirst({
+        where: eq(phoneNumbers.number, number),
+        columns: { id: true, status: true },
+      });
+      if (!poolRow || poolRow.status !== "available") {
+        return new Response(JSON.stringify({ error: "That number is no longer available" }), {
+          status: 400, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const ws = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, workspaceId),
+        columns: { twilioPhone: true },
+      });
+      if (ws?.twilioPhone && ws.twilioPhone !== number) {
+        return new Response(JSON.stringify({ error: "This workspace already has a phone number assigned" }), {
+          status: 409, headers: { "Content-Type": "application/json" },
+        });
+      }
+      // Pool numbers are already owned — no Twilio provisioning API call.
+      await db
+        .update(workspaces)
+        .set({ twilioPhone: number, phoneMode: "provisioned" })
+        .where(eq(workspaces.id, workspaceId));
+      await db
+        .update(phoneNumbers)
+        .set({ status: "assigned", workspaceId, assignedAt: new Date() })
+        .where(eq(phoneNumbers.id, poolRow.id));
+      await db.insert(activityLog).values({
+        id: crypto.randomUUID(),
+        workspaceId,
+        type: "phone_provisioned",
+        description: `Assigned phone number ${number}`,
+        metadata: { twilioPhone: number, pool: true },
+        createdAt: new Date(),
+      });
+      return new Response(JSON.stringify({ success: true, twilio_phone: number }), {
+        status: 201, headers: { "Content-Type": "application/json" },
+      });
     }
 
     // ── GET /api/workspace/calls ────────────────────────────────────
