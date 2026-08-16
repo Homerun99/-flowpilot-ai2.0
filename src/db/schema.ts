@@ -230,6 +230,40 @@ export const documents = pgTable("documents", {
   metadata: json("metadata").$type<Record<string, unknown>>().default({}),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+// ── Email inbox ───────────────────────────────────────────────────────────
+/**
+ * Every inbound email captured via /api/webhooks/email/inbound.
+ * The AI never auto-sends: the row lands in status "draft" with an AI summary
+ * and AI-drafted reply (aiSubject/aiBody); a human approves via POST
+ * /api/emails/:id/send (or regenerates the draft with a prompt first).
+ * status: "draft" | "sent" | "error"
+ */
+export const emails = pgTable(
+  "emails",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    fromEmail: varchar("from_email", { length: 255 }).notNull(),
+    fromName: varchar("from_name", { length: 255 }),
+    toEmail: varchar("to_email", { length: 255 }).notNull(),
+    subject: varchar("subject", { length: 512 }).notNull(),
+    body: text("body").notNull(),
+    summary: text("summary"),
+    aiSubject: varchar("ai_subject", { length: 512 }),
+    aiBody: text("ai_body"),
+    status: varchar("status", { length: 20 }).notNull().default("draft"),
+    regenPrompt: text("regen_prompt"),
+    error: text("error"),
+    leadId: text("lead_id").references(() => leads.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    sentAt: timestamp("sent_at"),
+  },
+  (t) => [
+    index("emails_ws_created_idx").on(t.workspaceId, t.createdAt),
+  ],
+);
 
 // ── Call log ───────────────────────────────────────────────────────────────
 
@@ -280,4 +314,5 @@ export type Appointment = typeof appointments.$inferSelect;
 export type Proposal = typeof proposals.$inferSelect;
 export type ActivityLog = typeof activityLog.$inferSelect;
 export type Document = typeof documents.$inferSelect;
+export type Email = typeof emails.$inferSelect;
 export type Call = typeof calls.$inferSelect;
