@@ -311,6 +311,8 @@ async function executeToolCall(
           amount: args.amount as number,
         },
         workspaceId,
+        undefined,
+        ctx.businessName,
       );
     }
 
@@ -319,6 +321,7 @@ async function executeToolCall(
       const { generateInvoicePdf } = await import("./pdf-invoice");
       const { sendEmail } = await import("./email");
 
+      const businessName = ctx.businessName || ctx.fromName || "FlowPilot AI";
       const inv = await generateInvoice(
         {
           customerName: args.customerName as string,
@@ -326,12 +329,13 @@ async function executeToolCall(
           amount: args.amount as number,
         },
         workspaceId,
+        undefined,
+        businessName,
       );
 
       // Resolve payment link: per-call first, fall back to workspace default
       const paymentLink = (args.paymentLink as string)?.trim() || ctx.paymentLink || undefined;
 
-      const businessName = ctx.businessName || ctx.fromName || "FlowPilot AI";
       const pdfBuffer = await generateInvoicePdf({
         invoice: inv,
         businessName,
