@@ -35,6 +35,8 @@ export interface LeadReplyInput {
   leadName: string;
   inquiryText: string;
   businessContext?: string;
+  /** Optional abort signal — the voice/email paths cap AI calls at ~6s. */
+  signal?: AbortSignal;
 }
 
 export interface LeadReplyOutput {
@@ -46,6 +48,8 @@ export interface LeadScoreInput {
   name: string;
   source?: string;
   message: string;
+  /** Optional abort signal — caps the call at ~6s on time-sensitive paths. */
+  signal?: AbortSignal;
 }
 
 export interface LeadScoreOutput {
@@ -170,7 +174,8 @@ export async function processLeadReply(
       ],
       response_format: { type: "json_object" },
       temperature,
-    });
+    },
+    { signal: input.signal });
 
     const raw = response.choices[0]?.message?.content;
     if (!raw) throw new Error("OpenAI returned empty response");
@@ -232,7 +237,8 @@ export async function scoreLead(
       ],
       response_format: { type: "json_object" },
       temperature,
-    });
+    },
+    { signal: input.signal });
 
     const raw = response.choices[0]?.message?.content;
     if (!raw) throw new Error("OpenAI returned empty response");
@@ -252,6 +258,53 @@ export async function scoreLead(
     });
 
     return parsed;
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      throw new Error(`Failed to parse OpenAI JSON response: ${(err as Error).message}`);
+    }
+    throw err;
+  }
+}
+
+// ── 2b. Email Summarizer: summarizeEmail ────────────────────────────
+/**
+ * Plain-English 1-3 sentence summary of an inbound customer email: what they
+ * want + any action items. Used by the email-inbox pipeline; hard 6s timeout
+ * like the rest of the time-sensitive AI paths.
+ */
+export async function summarizeEmail(
+  input: { text: string; subject?: string },
+  workspaceId: string,
+  signal?: AbortSignal,
+): Promise<{ summary: string }> {
+  const openai = getOpenAI();
+  const systemPrompt =
+    "You are a sharp administrative assistant for a small business. " +
+    "Read the inbound customer email and produce a 1-3 sentence plain-English " +
+    "summary of what the customer wants plus any action items the business needs " +
+    'to take. Return a JSON object with exactly one field: "summary".'
+  const userPrompt =
+    `Subject: ${input.subject || "(none)"}\n\nEmail body:\n${input.text}\n\n` +
+    "Summarize this email in JSON format.";
+  try {
+    const response = await openai.chat.completions.create({
+      model: MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.2,
+    },
+    { signal });
+    const raw = response.choices[0]?.message?.content;
+    if (!raw) throw new Error("OpenAI returned empty response");
+    const parsed = JSON.parse(raw) as { summary?: string };
+    if (!parsed.summary) throw new Error("OpenAI response missing summary field");
+    await logActivity(workspaceId, "email_agent", "Summarized inbound customer email", {
+      summary: parsed.summary.slice(0, 200),
+    });
+    return { summary: parsed.summary };
   } catch (err) {
     if (err instanceof SyntaxError) {
       throw new Error(`Failed to parse OpenAI JSON response: ${(err as Error).message}`);

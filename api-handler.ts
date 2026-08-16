@@ -15,6 +15,7 @@ import {
   workspaces,
   users,
   calls,
+  emails,
   MAX_KEY_QUESTION_BLOCKS,
   MAX_KEY_QUESTIONS_PER_BLOCK,
 } from "./src/db/schema";
@@ -26,6 +27,8 @@ import {
   detectSchedulingIntent,
   generateProposal,
   searchKnowledgeBase,
+  summarizeEmail,
+  type EmployeeConfig,
 } from "./src/lib/ai-employees";
 import { sendEmail } from "./src/lib/email";
 import { hashPassword, verifyPassword } from "./src/lib/auth/password";
@@ -1216,37 +1219,259 @@ export async function handleApiRequest(
       });
     }
 
-    // ── POST /api/webhooks/email/inbound ───────────────────────────
+    // ── POST /api/webhooks/email/inbound ───────────────────────────────
+    // Receives inbound customer email from SendGrid Inbound Parse (form payload)
+    // OR a JSON body {from, fromName?, to, subject, body} for simulation/testing.
+    // Resolves the workspace by To address, stores the email (status=draft),
+    // recognizes/creates a lead, and runs AI summary + AI draft reply in
+    // parallel (each hard-capped at 6s). NEVER auto-sends — human approval
+    // happens in the dashboard via POST /api/emails/:id/send.
     if (pathname === "/api/webhooks/email/inbound" && method === "POST") {
-      const body = await request.json() as {
-        from?: string; fromName?: string; subject?: string;
-        body?: string; workspace_id?: string;
-      };
-
-      const wsId = body.workspace_id || workspaceId;
-
-      if (!body.from && !body.subject) {
-        return new Response(JSON.stringify({ error: "from and subject are required" }), {
+      // Always answer 200 so the mail provider stops retrying, even on errors.
+      try {
+        let from = "", fromName = "", to = "", subject = "", bodyText = "";
+        const contentType = request.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const j = await request.json() as Record<string, unknown>;
+          from = String(j.from ?? ""); fromName = String(j.fromName ?? "");
+          to = String(j.to ?? ""); subject = String(j.subject ?? "");
+          bodyText = String(j.body ?? "");
+        } else {
+          const form = await request.formData();
+          from = String(form.get("from") ?? ""); fromName = String(form.get("from_name") ?? "");
+          to = String(form.get("to") ?? ""); subject = String(form.get("subject") ?? "");
+          bodyText = String(form.get("text") ?? form.get("html") ?? "");
+        }
+        from = from.trim(); to = to.trim();
+        if (!from || !to) {
+          return new Response(JSON.stringify({ status: "ignored", reason: "missing from/to" }), {
+            status: 200, headers: { "Content-Type": "application/json" },
+          });
+        }
+        console.log(`[email-inbound] from=${from} to=${to} subject=${subject?.slice(0, 80)}`);
+        // Resolve workspace by To address — exact case-insensitive match
+        const ws = await db.query.workspaces.findFirst({
+          where: sql`lower(${workspaces.fromEmail}) = ${to.toLowerCase()}`,
+        });
+        if (!ws) {
+          console.log(`[email-inbound] no workspace for ${to} — acknowledged`);
+          return new Response(JSON.stringify({ status: "ignored", reason: "unknown_recipient" }), {
+            status: 200, headers: { "Content-Type": "application/json" },
+          });
+        }
+        // Lead recognition — dedupe by sender email (lowercase), never duplicate
+        const senderLower = from.toLowerCase();
+        let lead = await db.query.leads.findFirst({
+          where: and(eq(leads.workspaceId, ws.id), sql`lower(${leads.email}) = ${senderLower}`),
+        });
+        let leadId: string | null = lead?.id ?? null;
+        if (!lead) {
+          const newLeadId = crypto.randomUUID();
+          await db.insert(leads).values({
+            id: newLeadId,
+            workspaceId: ws.id,
+            name: fromName || from.split("@")[0] || "Unknown Sender",
+            email: from,
+            source: "email",
+            notes: bodyText.slice(0, 200),
+          });
+          leadId = newLeadId;
+          // Score the new lead (non-fatal — never blocks the webhook response)
+          try {
+            const scored = await scoreLead(
+              { name: fromName || from, source: "email", message: bodyText.slice(0, 2000), signal: AbortSignal.timeout(6000) },
+              ws.id,
+            );
+            await db.update(leads).set({ score: scored.score }).where(eq(leads.id, newLeadId));
+          } catch (leadErr) {
+            console.error("[email-inbound] lead scoring failed:", leadErr);
+          }
+        }
+        // Insert the email row (status=draft)
+        const emailId = crypto.randomUUID();
+        await db.insert(emails).values({
+          id: emailId,
+          workspaceId: ws.id,
+          fromEmail: from,
+          fromName: fromName || null,
+          toEmail: to,
+          subject,
+          body: bodyText,
+          status: "draft",
+          leadId,
+        });
+        // Business context for the AI draft from the workspace's receptionist config
+        const rc = (ws.receptionistConfig ?? {}) as Record<string, unknown>;
+        const businessContext = [rc.businessName, rc.businessType, rc.description, rc.customInstructions]
+          .filter((v): v is string => typeof v === "string" && v.length > 0)
+          .join(" · ") || undefined;
+        // Email-agent employee config if the workspace has one
+        const emailAgent = await db.query.aiEmployees.findFirst({
+          where: and(eq(aiEmployees.workspaceId, ws.id), eq(aiEmployees.type, "email-agent")),
+        });
+        const agentCfg = emailAgent?.config as Record<string, unknown> | undefined;
+        const employeeConfig: EmployeeConfig | undefined = emailAgent
+          ? {
+              name: emailAgent.name,
+              personality: (agentCfg?.personality as string) || "professional",
+              temperature: (agentCfg?.temperature as number) || 0.5,
+              instructions: (agentCfg?.instructions as string) || "",
+            }
+          : undefined;
+        // AI summary + AI draft in parallel, each hard-capped at 6s
+        const [summaryRes, draftRes] = await Promise.allSettled([
+          summarizeEmail({ text: bodyText, subject }, ws.id, AbortSignal.timeout(6000)),
+          processLeadReply(
+            {
+              leadName: fromName || from,
+              inquiryText: `Subject: ${subject || "(no subject)"}\n\n${bodyText}`,
+              businessContext,
+              signal: AbortSignal.timeout(6000),
+            },
+            ws.id,
+            employeeConfig,
+          ),
+        ]);
+        const updates: Record<string, unknown> = {};
+        if (summaryRes.status === "fulfilled") updates.summary = summaryRes.value.summary;
+        if (draftRes.status === "fulfilled") {
+          updates.aiSubject = draftRes.value.subject;
+          updates.aiBody = draftRes.value.body;
+        }
+        const failures: string[] = [];
+        if (summaryRes.status === "rejected") failures.push(`summary: ${(summaryRes.reason as Error)?.message ?? summaryRes.reason}`);
+        if (draftRes.status === "rejected") failures.push(`draft: ${(draftRes.reason as Error)?.message ?? draftRes.reason}`);
+        if (failures.length > 0) {
+          updates.status = "error";
+          updates.error = failures.join(" | ").slice(0, 1000);
+          console.error(`[email-inbound] AI failed for ${emailId}: ${updates.error}`);
+        }
+        await db.update(emails).set(updates).where(eq(emails.id, emailId));
+        // Fire the automation trigger (fire-and-forget — never delays the 200)
+        fireAutomationTrigger(ws.id, "new_email", { emailId, from, fromName, to, subject })
+          .catch((err) => console.error("[email-inbound] automation trigger failed:", err));
+        return new Response(JSON.stringify({
+          status: "ok",
+          emailId,
+          leadId,
+          draftReady: failures.length === 0,
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      } catch (err) {
+        console.error("[email-inbound] handler error (acking 200):", err);
+        return new Response(JSON.stringify({ status: "error", message: "ack" }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+    // ── GET /api/emails ── Email Inbox list (newest first) ────────────
+    if (pathname === "/api/emails" && method === "GET") {
+      const wsId = url.searchParams.get("workspace") || workspaceId;
+      const result = await db.query.emails.findMany({
+        where: eq(emails.workspaceId, wsId),
+        orderBy: desc(emails.createdAt),
+        limit: 200,
+      });
+      return new Response(JSON.stringify({ emails: result }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    // ── POST /api/emails/:id/regenerate ── re-run the AI draft ────────
+    const regenMatch = pathname.match(/^\/api\/emails\/([^/]+)\/regenerate$/);
+    if (regenMatch && method === "POST") {
+      const emailId = decodeURIComponent(regenMatch[1]);
+      const email = await db.query.emails.findFirst({ where: eq(emails.id, emailId) });
+      if (!email || email.workspaceId !== workspaceId) {
+        return new Response(JSON.stringify({ error: "Email not found" }), {
+          status: 404, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (email.status === "sent") {
+        return new Response(JSON.stringify({ error: "This email was already sent" }), {
           status: 400, headers: { "Content-Type": "application/json" },
         });
       }
-
-      const payload: Record<string, unknown> = {
-        name: body.fromName || body.from || "Unknown Sender",
-        email: body.from,
-        subject: body.subject,
-        message: body.body || "",
-        inquiryText: `Subject: ${body.subject || "(no subject)"}\n\n${body.body || ""}`,
-      };
-
-      // Fire both new_email and lead_message triggers
-      const results1 = await fireAutomationTrigger(wsId, "new_email", payload);
-      const results2 = await fireAutomationTrigger(wsId, "lead_message", payload);
-
-      return new Response(JSON.stringify({
-        results: { new_email: results1, lead_message: results2 },
-      }), {
-        status: 200, headers: { "Content-Type": "application/json" },
+      const body = await request.json().catch(() => ({})) as { prompt?: string };
+      const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
+      const rc = (ws?.receptionistConfig ?? {}) as Record<string, unknown>;
+      const businessContext = [rc.businessName, rc.businessType, rc.description, rc.customInstructions]
+        .filter((v): v is string => typeof v === "string" && v.length > 0)
+        .join(" · ") || undefined;
+      const emailAgent = await db.query.aiEmployees.findFirst({
+        where: and(eq(aiEmployees.workspaceId, workspaceId), eq(aiEmployees.type, "email-agent")),
+      });
+      const agentCfg = emailAgent?.config as Record<string, unknown> | undefined;
+      const employeeConfig: EmployeeConfig | undefined = emailAgent
+        ? {
+            name: emailAgent.name,
+            personality: (agentCfg?.personality as string) || "professional",
+            temperature: (agentCfg?.temperature as number) || 0.5,
+            instructions: (agentCfg?.instructions as string) || "",
+          }
+        : undefined;
+      const direction = body.prompt?.trim()
+        ? `\n\nRewrite this reply per the following direction: ${body.prompt.trim()}`
+        : "";
+      const draft = await processLeadReply(
+        {
+          leadName: email.fromName || email.fromEmail,
+          inquiryText: `Subject: ${email.subject}\n\n${email.body}${direction}`,
+          businessContext,
+          signal: AbortSignal.timeout(6000),
+        },
+        workspaceId,
+        employeeConfig,
+      );
+      await db.update(emails).set({
+        aiSubject: draft.subject,
+        aiBody: draft.body,
+        regenPrompt: body.prompt?.trim() || null,
+        status: "draft",
+        error: null,
+      }).where(eq(emails.id, emailId));
+      const updated = await db.query.emails.findFirst({ where: eq(emails.id, emailId) });
+      return new Response(JSON.stringify({ email: updated }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    // ── POST /api/emails/:id/send ── human-approved send of the draft ─
+    const sendMatch = pathname.match(/^\/api\/emails\/([^/]+)\/send$/);
+    if (sendMatch && method === "POST") {
+      const emailId = decodeURIComponent(sendMatch[1]);
+      const email = await db.query.emails.findFirst({ where: eq(emails.id, emailId) });
+      if (!email || email.workspaceId !== workspaceId) {
+        return new Response(JSON.stringify({ error: "Email not found" }), {
+          status: 404, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (!email.aiSubject || !email.aiBody) {
+        return new Response(JSON.stringify({ error: "No AI draft to send — regenerate first" }), {
+          status: 400, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (email.status === "sent") {
+        return new Response(JSON.stringify({ error: "This email was already sent" }), {
+          status: 400, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
+      const fromName = ws?.fromName || ws?.name || "FlowPilot AI";
+      const result = await sendEmail({
+        from: `${fromName} <${ws?.fromEmail || email.toEmail}>`,
+        to: email.fromEmail,
+        subject: email.aiSubject,
+        body: email.aiBody,
+        replyTo: ws?.replyTo || ws?.fromEmail || undefined,
+      });
+      await db.update(emails).set({ status: "sent", sentAt: new Date() }).where(eq(emails.id, emailId));
+      await db.insert(activityLog).values({
+        id: crypto.randomUUID(),
+        workspaceId,
+        type: "email_agent",
+        description: `Sent AI reply to ${email.fromName || email.fromEmail}`,
+        metadata: { emailId, to: email.fromEmail, subject: email.aiSubject },
+      });
+      return new Response(JSON.stringify({ success: true, messageId: result.messageId }), {
+        headers: { "Content-Type": "application/json" },
       });
     }
 
